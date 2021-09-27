@@ -3,8 +3,6 @@
 @inline UnsafeAtomics.cas!(x, cmp, new) = UnsafeAtomics.cas!(x, cmp, new, seq_cst, seq_cst)
 @inline UnsafeAtomics.modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, seq_cst)
 
-right(_, x) = x
-
 const OP_RMW_TABLE = [
     (+) => :add,
     (-) => :sub,
@@ -20,10 +18,8 @@ const OP_RMW_TABLE = [
 for (op, rmwop) in OP_RMW_TABLE
     fn = Symbol(rmwop, "!")
     @eval @inline UnsafeAtomics.$fn(x, v) = UnsafeAtomics.$fn(x, v, seq_cst)
-    @eval @inline function UnsafeAtomics.modify!(ptr, ::typeof($op), x, ord)
-        old = UnsafeAtomics.$fn(ptr, x, ord)
-        return old, $op(old, x)
-    end
+    @eval @inline UnsafeAtomics.$fn(ptr, x, ord) =
+        first(UnsafeAtomics.modify!(ptr, $op, x, ord))
 end
 
 for typ in inttypes
@@ -102,7 +98,7 @@ for typ in inttypes
         end
     end
 
-    for rmwop in [:add, :sub, :xchg, :and, :nand, :or, :xor, :max, :min]
+    for (op, rmwop) in OP_RMW_TABLE
         rmw = string(rmwop)
         fn = Symbol(rmw, "!")
         if (rmw == "max" || rmw == "min") && typ <: Unsigned
@@ -110,8 +106,13 @@ for typ in inttypes
             rmw = "u" * rmw
         end
         for ord in orderings
-            @eval function UnsafeAtomics.$fn(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)))
-                return llvmcall(
+            @eval function UnsafeAtomics.modify!(
+                x::Ptr{$typ},
+                ::typeof($op),
+                v::$typ,
+                ::$(typeof(ord)),
+            )
+                old = llvmcall(
                     $("""
                     %ptr = inttoptr i$WORD_SIZE %0 to $lt*
                     %rv = atomicrmw $rmw $lt* %ptr, $lt %1 $ord
@@ -122,6 +123,7 @@ for typ in inttypes
                     x,
                     v,
                 )
+                return (old, $op(old, v))
             end
         end
     end
