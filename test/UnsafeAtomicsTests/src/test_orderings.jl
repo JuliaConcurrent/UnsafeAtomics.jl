@@ -8,7 +8,7 @@ const ORDERINGS = [:unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cs
 function check_ordering(name::Symbol)
     ord = getfield(UnsafeAtomics, name)
     @test ord isa Ordering
-    @test string(ord) == string(name)
+    @test string(ord) == sprint(print, ord) == string(name)
     @test repr(ord) == "UnsafeAtomics.$name"
 end
 
