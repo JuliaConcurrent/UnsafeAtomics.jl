@@ -3,6 +3,31 @@
 @inline UnsafeAtomics.cas!(x, cmp, new) = UnsafeAtomics.cas!(x, cmp, new, seq_cst, seq_cst)
 @inline UnsafeAtomics.modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, seq_cst)
 
+#! format: off
+# https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L23-L30
+if Sys.ARCH == :i686 || startswith(string(Sys.ARCH), "arm") ||
+   Sys.ARCH === :powerpc64le || Sys.ARCH === :ppc64le
+    const inttypes = (Int8, Int16, Int32, Int64,
+                      UInt8, UInt16, UInt32, UInt64)
+else
+    const inttypes = (Int8, Int16, Int32, Int64, Int128,
+                      UInt8, UInt16, UInt32, UInt64, UInt128)
+end
+
+# https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L331-L341
+const llvmtypes = IdDict{Any,String}(
+    Bool => "i8",  # julia represents bools with 8-bits for now. # TODO: is this okay?
+    Int8 => "i8", UInt8 => "i8",
+    Int16 => "i16", UInt16 => "i16",
+    Int32 => "i32", UInt32 => "i32",
+    Int64 => "i64", UInt64 => "i64",
+    Int128 => "i128", UInt128 => "i128",
+    Float16 => "half",
+    Float32 => "float",
+    Float64 => "double",
+)
+#! format: on
+
 const OP_RMW_TABLE = [
     (+) => :add,
     (-) => :sub,
@@ -22,6 +47,7 @@ for (op, rmwop) in OP_RMW_TABLE
         first(UnsafeAtomics.modify!(ptr, $op, x, ord))
 end
 
+# Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
 for typ in inttypes
     lt = llvmtypes[typ]
     rt = "$lt, $lt*"

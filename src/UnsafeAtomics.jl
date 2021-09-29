@@ -22,8 +22,7 @@ right(_, x) = x
 module Internal
 
 using Base.Sys: WORD_SIZE
-using Base.Threads: inttypes, llvmtypes
-using Core.Intrinsics: llvmcall
+using Base: llvmcall
 
 using ..UnsafeAtomics: UnsafeAtomics, Ordering, right
 
