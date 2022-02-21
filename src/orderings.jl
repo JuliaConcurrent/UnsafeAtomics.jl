@@ -11,7 +11,7 @@ const orderings = (unordered, monotonic, acquire, release, acq_rel, seq_cst)
 
 const ConcreteOrdering = Union{map(typeof, orderings)...}
 
-llvm_ordering(::LLVMOrdering{name}) where {name} =name 
+llvm_ordering(::LLVMOrdering{name}) where {name} = name
 Base.string(o::LLVMOrdering) = String(llvm_ordering(o))
 Base.print(io::IO, o::LLVMOrdering) = print(io, string(o))
 
