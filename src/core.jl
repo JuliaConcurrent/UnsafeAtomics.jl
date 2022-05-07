@@ -149,7 +149,7 @@ for typ in inttypes
                     x,
                     v,
                 )
-                return (old, $op(old, v))
+                return old => $op(old, v)
             end
         end
     end

@@ -26,7 +26,7 @@ function test_default_ordering(T::Type)
         @test xs[1] === x2
         @testset for (op, name) in OP_RMW_TABLE
             xs[1] = x1
-            @test UnsafeAtomics.modify!(ptr, op, x2) === (x1, op(x1, x2))
+            @test UnsafeAtomics.modify!(ptr, op, x2) === (x1 => op(x1, x2))
             @test xs[1] === op(x1, x2)
 
             rmw = getfield(UnsafeAtomics, Symbol(name, :!))
@@ -54,7 +54,7 @@ function test_explicit_ordering(T::Type = UInt)
         @test xs[1] === x2
         @testset for (op, name) in OP_RMW_TABLE
             xs[1] = x1
-            @test UnsafeAtomics.modify!(ptr, op, x2, acq_rel) === (x1, op(x1, x2))
+            @test UnsafeAtomics.modify!(ptr, op, x2, acq_rel) === (x1 => op(x1, x2))
             @test xs[1] === op(x1, x2)
 
             rmw = getfield(UnsafeAtomics, Symbol(name, :!))
