@@ -2,7 +2,9 @@ baremodule UnsafeAtomicsLLVM
 
 module Internal
 
-using ..UnsafeAtomicsLLVM: UnsafeAtomicsLLVM
+using Core: LLVMPtr
+using LLVM
+using UnsafeAtomics: UnsafeAtomics, Ordering
 
 include("internal.jl")
 

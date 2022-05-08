@@ -1,0 +1,12 @@
+name = "UnsafeAtomicsLLVMTests"
+uuid = "f81c5320-9584-4f93-9445-2842f5246c7e"
+authors = ["Takafumi Arakaki <aka.tkf@gmail.com> and contributors"]
+version = "0.1.0-DEV"
+
+[deps]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+UnsafeAtomics = "013be700-e6cd-48c3-b4a1-df204f14c38f"
+UnsafeAtomicsLLVM = "d80eeb9a-aca5-4d75-85e5-170c8b632249"
+
+[compat]
+julia = "1.6"
