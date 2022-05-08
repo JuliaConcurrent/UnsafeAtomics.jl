@@ -1,0 +1,7 @@
+name = "UnsafeAtomicsLLVM"
+uuid = "d80eeb9a-aca5-4d75-85e5-170c8b632249"
+authors = ["Takafumi Arakaki <aka.tkf@gmail.com> and contributors"]
+version = "0.1.0-DEV"
+
+[compat]
+julia = "1.6"
