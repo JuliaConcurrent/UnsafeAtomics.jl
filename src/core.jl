@@ -13,6 +13,7 @@ else
     const inttypes = (Int8, Int16, Int32, Int64, Int128,
                       UInt8, UInt16, UInt32, UInt64, UInt128)
 end
+const floattypes = (Float16, Float32, Float64)
 
 # https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L331-L341
 const llvmtypes = IdDict{Any,String}(
@@ -27,6 +28,11 @@ const llvmtypes = IdDict{Any,String}(
     Float64 => "double",
 )
 #! format: on
+const llvmtypes_conv = IdDict{Any,Any}(
+    Float16 => UInt16,
+    Float32 => UInt32,
+    Float64 => UInt64,
+)
 
 const OP_RMW_TABLE = [
     (+) => :add,
@@ -39,6 +45,10 @@ const OP_RMW_TABLE = [
     max => :max,
     min => :min,
 ]
+const OP_RMW_FP_TABLE = [
+    (+) => :add,
+    (-) => :sub,
+]
 
 for (op, rmwop) in OP_RMW_TABLE
     fn = Symbol(rmwop, "!")
@@ -48,7 +58,7 @@ for (op, rmwop) in OP_RMW_TABLE
 end
 
 # Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
-for typ in inttypes
+for typ in (inttypes..., floattypes...)
     lt = llvmtypes[typ]
     rt = "$lt, $lt*"
 
@@ -87,6 +97,16 @@ for typ in inttypes
         end
     end
 
+    if typ <: AbstractFloat
+        typ_conv = llvmtypes_conv[typ]
+        lt_conv = llvmtypes[typ_conv]
+        rt_conv = "$lt_conv, $lt_conv*"
+    else
+        typ_conv = typ
+        lt_conv = lt
+        rt_conv = rt
+    end
+
     for success_ordering in (monotonic, acquire, release, acq_rel, seq_cst),
         failure_ordering in (monotonic, acquire, seq_cst)
 
@@ -102,34 +122,41 @@ for typ in inttypes
                 old = llvmcall(
                     $(
                         """
-                        %ptr = inttoptr i$WORD_SIZE %0 to $lt*
-                        %rs = cmpxchg $lt* %ptr, $lt %1, $lt %2 $success_ordering $failure_ordering
-                        %rv = extractvalue { $lt, i1 } %rs, 0
-                        %s1 = extractvalue { $lt, i1 } %rs, 1
+                        %ptr = inttoptr i$WORD_SIZE %0 to $lt_conv*
+                        %rs = cmpxchg $lt_conv* %ptr, $lt_conv %1, $lt_conv %2 $success_ordering $failure_ordering
+                        %rv = extractvalue { $lt_conv, i1 } %rs, 0
+                        %s1 = extractvalue { $lt_conv, i1 } %rs, 1
                         %s8 = zext i1 %s1 to i8
                         %sptr = inttoptr i$WORD_SIZE %3 to i8*
                         store i8 %s8, i8* %sptr
-                        ret $lt %rv
+                        ret $lt_conv %rv
                         """
                     ),
-                    $typ,
-                    Tuple{Ptr{$typ},$typ,$typ,Ptr{Int8}},
+                    $typ_conv,
+                    Tuple{Ptr{$typ},$typ_conv,$typ_conv,Ptr{Int8}},
                     x,
-                    cmp,
-                    new,
+                    reinterpret($typ_conv, cmp),
+                    reinterpret($typ_conv, new),
                     Ptr{Int8}(pointer_from_objref(success)),
                 )
             end
-            return (old = old, success = !iszero(success[]))
+            return (old = reinterpret($typ, old), success = !iszero(success[]))
         end
     end
 
-    for (op, rmwop) in OP_RMW_TABLE
+    for (op, rmwop) in (typ <: Integer ? OP_RMW_TABLE : OP_RMW_FP_TABLE)
         rmw = string(rmwop)
         fn = Symbol(rmw, "!")
         if (rmw == "max" || rmw == "min") && typ <: Unsigned
             # LLVM distinguishes signedness in the operation, not the integer type.
             rmw = "u" * rmw
+        end
+        if typ <: AbstractFloat
+            if rmw == "add"
+                rmw = "fadd"
+            elseif rmw == "sub"
+                rmw = "fsub"
+            end
         end
         for ord in orderings
             @eval function UnsafeAtomics.modify!(
