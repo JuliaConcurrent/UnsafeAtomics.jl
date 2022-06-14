@@ -13,7 +13,6 @@ jobs:
     strategy:
       matrix:
         julia-version:
-          - '1.0'
           - '1.6'
           - '~1.7.0-beta4'
           - 'nightly'

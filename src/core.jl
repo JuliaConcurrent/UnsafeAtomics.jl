@@ -13,6 +13,7 @@ else
     const inttypes = (Int8, Int16, Int32, Int64, Int128,
                       UInt8, UInt16, UInt32, UInt64, UInt128)
 end
+const floattypes = (Float16, Float32, Float64)
 
 # https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L331-L341
 const llvmtypes = IdDict{Any,String}(
@@ -48,7 +49,7 @@ for (op, rmwop) in OP_RMW_TABLE
 end
 
 # Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
-for typ in inttypes
+for typ in (inttypes..., floattypes...)
     lt = llvmtypes[typ]
     rt = "$lt, $lt*"
 
@@ -89,6 +90,8 @@ for typ in inttypes
 
     for success_ordering in (monotonic, acquire, release, acq_rel, seq_cst),
         failure_ordering in (monotonic, acquire, seq_cst)
+
+        typ <: AbstractFloat && break
 
         @eval function UnsafeAtomics.cas!(
             x::Ptr{$typ},
@@ -131,6 +134,15 @@ for typ in inttypes
             # LLVM distinguishes signedness in the operation, not the integer type.
             rmw = "u" * rmw
         end
+        if typ <: AbstractFloat
+            if rmw == "add"
+                rmw = "fadd"
+            elseif rmw == "sub"
+                rmw = "fsub"
+            else
+                continue
+            end
+        end
         for ord in orderings
             @eval function UnsafeAtomics.modify!(
                 x::Ptr{$typ},
@@ -154,4 +166,61 @@ for typ in inttypes
         end
     end
 
+end
+
+function UnsafeAtomics.cas!(
+    x::Ptr{T},
+    cmp::T,
+    new::T,
+    success_ordering,
+    failure_ordering,
+) where {T}
+    if sizeof(T) == 1
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt8}(x),
+            bitcast(UInt8, cmp),
+            bitcast(UInt8, new),
+            success_ordering,
+            failure_ordering,
+        )
+        return (old = bitcast(T, old), success = success)
+    elseif sizeof(T) == 2
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt16}(x),
+            bitcast(UInt16, cmp),
+            bitcast(UInt16, new),
+            success_ordering,
+            failure_ordering,
+        )
+        return (old = bitcast(T, old), success = success)
+    elseif sizeof(T) == 4
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt32}(x),
+            bitcast(UInt32, cmp),
+            bitcast(UInt32, new),
+            success_ordering,
+            failure_ordering,
+        )
+        return (old = bitcast(T, old), success = success)
+    elseif sizeof(T) == 8
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt64}(x),
+            bitcast(UInt64, cmp),
+            bitcast(UInt64, new),
+            success_ordering,
+            failure_ordering,
+        )
+        return (old = bitcast(T, old), success = success)
+    elseif sizeof(T) == 16
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt128}(x),
+            bitcast(UInt128, cmp),
+            bitcast(UInt128, new),
+            success_ordering,
+            failure_ordering,
+        )
+        return (old = bitcast(T, old), success = success)
+    else
+        error(LazyString("unsupported size: ", sizeof(T)))
+    end
 end
