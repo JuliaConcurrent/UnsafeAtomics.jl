@@ -1,8 +1,10 @@
 module TestCore
 
-using UnsafeAtomics: UnsafeAtomics, acquire, release, acq_rel
+using UnsafeAtomics: UnsafeAtomics, acquire, release, acq_rel, right
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
 using Test
+
+using ..Bits
 
 function test_default_ordering()
     @testset for T in inttypes
@@ -11,11 +13,16 @@ function test_default_ordering()
     @testset for T in floattypes
         test_default_ordering(T)
     end
+    @testset for T in (asbits(T) for T in inttypes if T <: Unsigned)
+        test_default_ordering(T)
+    end
 end
 
 rmw_table_for(@nospecialize T) =
     if T <: AbstractFloat
         ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (+, -))
+    elseif T <: AbstractBits
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (right,))
     else
         OP_RMW_TABLE
     end
