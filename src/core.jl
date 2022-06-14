@@ -40,10 +40,6 @@ const OP_RMW_TABLE = [
     max => :max,
     min => :min,
 ]
-const OP_RMW_FP_TABLE = [
-    (+) => :add,
-    (-) => :sub,
-]
 
 for (op, rmwop) in OP_RMW_TABLE
     fn = Symbol(rmwop, "!")
@@ -131,7 +127,7 @@ for typ in (inttypes..., floattypes...)
         end
     end
 
-    for (op, rmwop) in (typ <: Integer ? OP_RMW_TABLE : OP_RMW_FP_TABLE)
+    for (op, rmwop) in OP_RMW_TABLE
         rmw = string(rmwop)
         fn = Symbol(rmw, "!")
         if (rmw == "max" || rmw == "min") && typ <: Unsigned
@@ -143,6 +139,8 @@ for typ in (inttypes..., floattypes...)
                 rmw = "fadd"
             elseif rmw == "sub"
                 rmw = "fsub"
+            else
+                continue
             end
         end
         for ord in orderings
@@ -178,45 +176,50 @@ function UnsafeAtomics.cas!(
     failure_ordering,
 ) where {T}
     if sizeof(T) == 1
-        UnsafeAtomics.cas!(
+        (old, success) = UnsafeAtomics.cas!(
             Ptr{UInt8}(x),
             bitcast(UInt8, cmp),
             bitcast(UInt8, new),
             success_ordering,
             failure_ordering,
         )
+        return (old = bitcast(T, old), success = success)
     elseif sizeof(T) == 2
-        UnsafeAtomics.cas!(
-            Ptr{UInt8}(x),
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt16}(x),
             bitcast(UInt16, cmp),
             bitcast(UInt16, new),
             success_ordering,
             failure_ordering,
         )
+        return (old = bitcast(T, old), success = success)
     elseif sizeof(T) == 4
-        UnsafeAtomics.cas!(
-            Ptr{UInt8}(x),
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt32}(x),
             bitcast(UInt32, cmp),
             bitcast(UInt32, new),
             success_ordering,
             failure_ordering,
         )
+        return (old = bitcast(T, old), success = success)
     elseif sizeof(T) == 8
-        UnsafeAtomics.cas!(
-            Ptr{UInt8}(x),
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt64}(x),
             bitcast(UInt64, cmp),
             bitcast(UInt64, new),
             success_ordering,
             failure_ordering,
         )
+        return (old = bitcast(T, old), success = success)
     elseif sizeof(T) == 16
-        UnsafeAtomics.cas!(
-            Ptr{UInt8}(x),
+        (old, success) = UnsafeAtomics.cas!(
+            Ptr{UInt128}(x),
             bitcast(UInt128, cmp),
             bitcast(UInt128, new),
             success_ordering,
             failure_ordering,
         )
+        return (old = bitcast(T, old), success = success)
     else
         error(LazyString("unsupported size: ", sizeof(T)))
     end

@@ -22,7 +22,7 @@ right(_, x) = x
 module Internal
 
 using Base.Sys: WORD_SIZE
-using Base: llvmcall
+using Base: bitcast, llvmcall
 
 using ..UnsafeAtomics: UnsafeAtomics, Ordering, right
 
