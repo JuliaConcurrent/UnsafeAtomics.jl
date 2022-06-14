@@ -168,6 +168,38 @@ for typ in (inttypes..., floattypes...)
 
 end
 
+as_native_uint(::Type{T}) where {T} =
+    if sizeof(T) == 1
+        UInt8
+    elseif sizeof(T) == 2
+        UInt16
+    elseif sizeof(T) == 4
+        UInt32
+    elseif sizeof(T) == 8
+        UInt64
+    elseif sizeof(T) == 16
+        UInt128
+    else
+        error(LazyString("unsupported size: ", sizeof(T)))
+    end
+
+function UnsafeAtomics.load(x::Ptr{T}, ordering) where {T}
+    UI = as_native_uint(T)
+    v = UnsafeAtomics.load(Ptr{UI}(x), ordering)
+    return bitcast(T, v)
+end
+
+function UnsafeAtomics.store!(x::Ptr{T}, v::T, ordering) where {T}
+    UI = as_native_uint(T)
+    UnsafeAtomics.store!(Ptr{UI}(x), bitcast(UI, v), ordering)::Nothing
+end
+
+function UnsafeAtomics.modify!(x::Ptr{T}, ::typeof(right), v::T, ordering) where {T}
+    UI = as_native_uint(T)
+    old, _ = UnsafeAtomics.modify!(Ptr{UI}(x), right, bitcast(UI, v), ordering)
+    return bitcast(T, old) => v
+end
+
 function UnsafeAtomics.cas!(
     x::Ptr{T},
     cmp::T,
