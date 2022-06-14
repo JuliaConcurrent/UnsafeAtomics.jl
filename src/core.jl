@@ -28,11 +28,6 @@ const llvmtypes = IdDict{Any,String}(
     Float64 => "double",
 )
 #! format: on
-const llvmtypes_conv = IdDict{Any,Any}(
-    Float16 => UInt16,
-    Float32 => UInt32,
-    Float64 => UInt64,
-)
 
 const OP_RMW_TABLE = [
     (+) => :add,
@@ -97,18 +92,10 @@ for typ in (inttypes..., floattypes...)
         end
     end
 
-    if typ <: AbstractFloat
-        typ_conv = llvmtypes_conv[typ]
-        lt_conv = llvmtypes[typ_conv]
-        rt_conv = "$lt_conv, $lt_conv*"
-    else
-        typ_conv = typ
-        lt_conv = lt
-        rt_conv = rt
-    end
-
     for success_ordering in (monotonic, acquire, release, acq_rel, seq_cst),
         failure_ordering in (monotonic, acquire, seq_cst)
+
+        typ <: AbstractFloat && break
 
         @eval function UnsafeAtomics.cas!(
             x::Ptr{$typ},
@@ -122,25 +109,25 @@ for typ in (inttypes..., floattypes...)
                 old = llvmcall(
                     $(
                         """
-                        %ptr = inttoptr i$WORD_SIZE %0 to $lt_conv*
-                        %rs = cmpxchg $lt_conv* %ptr, $lt_conv %1, $lt_conv %2 $success_ordering $failure_ordering
-                        %rv = extractvalue { $lt_conv, i1 } %rs, 0
-                        %s1 = extractvalue { $lt_conv, i1 } %rs, 1
+                        %ptr = inttoptr i$WORD_SIZE %0 to $lt*
+                        %rs = cmpxchg $lt* %ptr, $lt %1, $lt %2 $success_ordering $failure_ordering
+                        %rv = extractvalue { $lt, i1 } %rs, 0
+                        %s1 = extractvalue { $lt, i1 } %rs, 1
                         %s8 = zext i1 %s1 to i8
                         %sptr = inttoptr i$WORD_SIZE %3 to i8*
                         store i8 %s8, i8* %sptr
-                        ret $lt_conv %rv
+                        ret $lt %rv
                         """
                     ),
-                    $typ_conv,
-                    Tuple{Ptr{$typ},$typ_conv,$typ_conv,Ptr{Int8}},
+                    $typ,
+                    Tuple{Ptr{$typ},$typ,$typ,Ptr{Int8}},
                     x,
-                    reinterpret($typ_conv, cmp),
-                    reinterpret($typ_conv, new),
+                    cmp,
+                    new,
                     Ptr{Int8}(pointer_from_objref(success)),
                 )
             end
-            return (old = reinterpret($typ, old), success = !iszero(success[]))
+            return (old = old, success = !iszero(success[]))
         end
     end
 
@@ -181,4 +168,56 @@ for typ in (inttypes..., floattypes...)
         end
     end
 
+end
+
+function UnsafeAtomics.cas!(
+    x::Ptr{T},
+    cmp::T,
+    new::T,
+    success_ordering,
+    failure_ordering,
+) where {T}
+    if sizeof(T) == 1
+        UnsafeAtomics.cas!(
+            Ptr{UInt8}(x),
+            bitcast(UInt8, cmp),
+            bitcast(UInt8, new),
+            success_ordering,
+            failure_ordering,
+        )
+    elseif sizeof(T) == 2
+        UnsafeAtomics.cas!(
+            Ptr{UInt8}(x),
+            bitcast(UInt16, cmp),
+            bitcast(UInt16, new),
+            success_ordering,
+            failure_ordering,
+        )
+    elseif sizeof(T) == 4
+        UnsafeAtomics.cas!(
+            Ptr{UInt8}(x),
+            bitcast(UInt32, cmp),
+            bitcast(UInt32, new),
+            success_ordering,
+            failure_ordering,
+        )
+    elseif sizeof(T) == 8
+        UnsafeAtomics.cas!(
+            Ptr{UInt8}(x),
+            bitcast(UInt64, cmp),
+            bitcast(UInt64, new),
+            success_ordering,
+            failure_ordering,
+        )
+    elseif sizeof(T) == 16
+        UnsafeAtomics.cas!(
+            Ptr{UInt8}(x),
+            bitcast(UInt128, cmp),
+            bitcast(UInt128, new),
+            success_ordering,
+            failure_ordering,
+        )
+    else
+        error(LazyString("unsupported size: ", sizeof(T)))
+    end
 end

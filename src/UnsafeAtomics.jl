@@ -26,10 +26,7 @@ using Base: llvmcall
 
 using ..UnsafeAtomics: UnsafeAtomics, Ordering, right
 
-if !@isdefined(⊼)
-    ⊼(a, b) = ~(a & b)
-end
-
+include("utils.jl")
 include("orderings.jl")
 include("core.jl")
 
