@@ -48,8 +48,9 @@ function test_default_ordering(T::Type)
 end
 
 function test_explicit_ordering()
-    test_explicit_ordering(UInt)
-    test_explicit_ordering(Float64)
+    @testset for T in [UInt, Float64]
+        test_explicit_ordering(T)
+    end
 end
 
 function test_explicit_ordering(T::Type)
