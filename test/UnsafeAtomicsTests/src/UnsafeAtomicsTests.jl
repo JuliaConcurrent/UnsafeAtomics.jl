@@ -1,5 +1,6 @@
 module UnsafeAtomicsTests
 
+include("bits.jl")
 include("test_orderings.jl")
 include("test_core.jl")
 
