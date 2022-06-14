@@ -21,6 +21,6 @@ for T in [UInt8, UInt16, UInt32, UInt64, UInt128]
     end
 end
 
-Base.rand(::Type{B}) where {B <: AbstractBits} = B(rand(asuint(B)))
+Base.rand(::Type{B}) where {B<:AbstractBits} = B(rand(asuint(B)))
 
 end  # module
