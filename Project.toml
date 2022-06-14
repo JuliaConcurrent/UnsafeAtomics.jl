@@ -1,7 +1,7 @@
 name = "UnsafeAtomics"
 uuid = "013be700-e6cd-48c3-b4a1-df204f14c38f"
 authors = ["Takafumi Arakaki <aka.tkf@gmail.com> and contributors"]
-version = "0.2.1-DEV"
+version = "0.2.1"
 
 [compat]
 julia = "1.6"
