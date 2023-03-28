@@ -163,12 +163,12 @@ end
         llvm_f, _ = create_function(eltyp, param_types)
 
         # generate IR
-        @dispose builder = Builder(ctx) begin
+        @dispose builder = IRBuilder(ctx) begin
             entry = BasicBlock(llvm_f, "entry"; ctx)
             position!(builder, entry)
 
             typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
-            ld = load!(builder, typed_ptr)
+            ld = load!(builder, eltyp, typed_ptr)
             ordering!(ld, llvm_order)
 
             if A != 0
@@ -208,7 +208,7 @@ end
         llvm_f, _ = create_function(LLVM.VoidType(ctx), param_types)
 
         # generate IR
-        @dispose builder = Builder(ctx) begin
+        @dispose builder = IRBuilder(ctx) begin
             entry = BasicBlock(llvm_f, "entry"; ctx)
             position!(builder, entry)
 
@@ -266,7 +266,7 @@ const AtomicRMWBinOpVal = Union{(Val{binop} for (_, _, binop) in binoptable)...}
 
         llvm_f, _ = create_function(T_val, [T_ptr, T_val])
 
-        @dispose builder = Builder(ctx) begin
+        @dispose builder = IRBuilder(ctx) begin
             entry = BasicBlock(llvm_f, "entry"; ctx)
             position!(builder, entry)
 
@@ -405,7 +405,7 @@ end
 
         llvm_f, _ = create_function(T_val, [T_ptr, T_val, T_val, T_success])
 
-        @dispose builder = Builder(ctx) begin
+        @dispose builder = IRBuilder(ctx) begin
             entry = BasicBlock(llvm_f, "entry"; ctx)
             position!(builder, entry)
 
