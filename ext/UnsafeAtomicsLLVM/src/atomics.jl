@@ -152,9 +152,9 @@ end
     sizeof(T) == 0 && return T.instance
     llvm_order = _valueof(llvm_from_julia_ordering(order()))
     @dispose ctx = Context() begin
-        eltyp = convert(LLVMType, T; ctx)
+        eltyp = convert(LLVMType, T)
 
-        T_ptr = convert(LLVMType, ptr; ctx)
+        T_ptr = convert(LLVMType, ptr)
 
         T_typed_ptr = LLVM.PointerType(eltyp, A)
 
@@ -163,8 +163,8 @@ end
         llvm_f, _ = create_function(eltyp, param_types)
 
         # generate IR
-        @dispose builder = IRBuilder(ctx) begin
-            entry = BasicBlock(llvm_f, "entry"; ctx)
+        @dispose builder = IRBuilder() begin
+            entry = BasicBlock(llvm_f, "entry")
             position!(builder, entry)
 
             typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
@@ -172,7 +172,7 @@ end
             ordering!(ld, llvm_order)
 
             if A != 0
-                metadata(ld)[LLVM.MD_tbaa] = tbaa_addrspace(A; ctx)
+                metadata(ld)[LLVM.MD_tbaa] = tbaa_addrspace(A)
             end
             alignment!(ld, sizeof(T))
 
@@ -199,17 +199,17 @@ end
     end
     llvm_order = _valueof(llvm_from_julia_ordering(order()))
     @dispose ctx = Context() begin
-        eltyp = convert(LLVMType, T; ctx)
-        T_ptr = convert(LLVMType, ptr; ctx)
+        eltyp = convert(LLVMType, T)
+        T_ptr = convert(LLVMType, ptr)
         T_typed_ptr = LLVM.PointerType(eltyp, A)
 
         # create a function
         param_types = [T_ptr, eltyp]
-        llvm_f, _ = create_function(LLVM.VoidType(ctx), param_types)
+        llvm_f, _ = create_function(LLVM.VoidType(), param_types)
 
         # generate IR
-        @dispose builder = IRBuilder(ctx) begin
-            entry = BasicBlock(llvm_f, "entry"; ctx)
+        @dispose builder = IRBuilder() begin
+            entry = BasicBlock(llvm_f, "entry")
             position!(builder, entry)
 
             typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
@@ -218,7 +218,7 @@ end
             ordering!(st, llvm_order)
 
             if A != 0
-                metadata(st)[LLVM.MD_tbaa] = tbaa_addrspace(A; ctx)
+                metadata(st)[LLVM.MD_tbaa] = tbaa_addrspace(A)
             end
             alignment!(st, sizeof(T))
 
@@ -259,15 +259,15 @@ const AtomicRMWBinOpVal = Union{(Val{binop} for (_, _, binop) in binoptable)...}
     order::LLVMOrderingVal,
 ) where {T,A}
     @dispose ctx = Context() begin
-        T_val = convert(LLVMType, T; ctx)
-        T_ptr = convert(LLVMType, ptr; ctx)
+        T_val = convert(LLVMType, T)
+        T_ptr = convert(LLVMType, ptr)
 
         T_typed_ptr = LLVM.PointerType(T_val, A)
 
         llvm_f, _ = create_function(T_val, [T_ptr, T_val])
 
-        @dispose builder = IRBuilder(ctx) begin
-            entry = BasicBlock(llvm_f, "entry"; ctx)
+        @dispose builder = IRBuilder() begin
+            entry = BasicBlock(llvm_f, "entry")
             position!(builder, entry)
 
             typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
@@ -392,21 +392,21 @@ end
     llvm_success = _valueof(success_order())
     llvm_fail = _valueof(fail_order())
     @dispose ctx = Context() begin
-        T_val = convert(LLVMType, T; ctx)
+        T_val = convert(LLVMType, T)
         T_pointee = T_val
         if T_val isa LLVM.FloatingPointType
-            T_pointee = LLVM.IntType(sizeof(T) * 8; ctx)
+            T_pointee = LLVM.IntType(sizeof(T) * 8)
         end
-        T_ptr = convert(LLVMType, ptr; ctx)
-        T_success = convert(LLVMType, Ptr{Int8}; ctx)
+        T_ptr = convert(LLVMType, ptr)
+        T_success = convert(LLVMType, Ptr{Int8})
 
         T_typed_ptr = LLVM.PointerType(T_pointee, A)
-        T_ok_ptr = LLVM.PointerType(convert(LLVMType, Int8; ctx))
+        T_ok_ptr = LLVM.PointerType(convert(LLVMType, Int8))
 
         llvm_f, _ = create_function(T_val, [T_ptr, T_val, T_val, T_success])
 
-        @dispose builder = IRBuilder(ctx) begin
-            entry = BasicBlock(llvm_f, "entry"; ctx)
+        @dispose builder = IRBuilder() begin
+            entry = BasicBlock(llvm_f, "entry")
             position!(builder, entry)
 
             typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
@@ -435,7 +435,7 @@ end
 
             rv = extract_value!(builder, res, 0)
             ok = extract_value!(builder, res, 1)
-            ok = zext!(builder, ok, LLVM.Int8Type(ctx))
+            ok = zext!(builder, ok, LLVM.Int8Type())
             store!(builder, ok, ok_ptr)
 
             if T_val isa LLVM.FloatingPointType
