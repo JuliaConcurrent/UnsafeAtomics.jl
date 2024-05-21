@@ -249,6 +249,10 @@ const binoptable = [
     (:fadd, +, LLVM.API.LLVMAtomicRMWBinOpFAdd),
     (:fsub, -, LLVM.API.LLVMAtomicRMWBinOpFSub),
 ]
+if VERSION ≥ v"1.10-"
+    push!(binoptable, (:fmax, max, LLVM.API.LLVMAtomicRMWBinOpFMax))
+    push!(binoptable, (:fmin, min, LLVM.API.LLVMAtomicRMWBinOpFMin))
+end
 
 const AtomicRMWBinOpVal = Union{(Val{binop} for (_, _, binop) in binoptable)...}
 
@@ -344,7 +348,7 @@ for (opname, op, llvmop) in binoptable
         filter(t -> t <: Signed, atomictypes)
     elseif opname in (:umin, :umax)
         filter(t -> t <: Unsigned, atomictypes)
-    elseif opname in (:fadd, :fsub)
+    elseif opname in (:fadd, :fsub, :fmin, :fmax)
         filter(t -> t <: AbstractFloat, atomictypes)
     else
         filter(t -> t <: Integer, atomictypes)
