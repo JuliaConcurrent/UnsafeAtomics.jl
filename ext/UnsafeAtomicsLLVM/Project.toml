@@ -1,13 +1,13 @@
 name = "UnsafeAtomicsLLVM"
 uuid = "d80eeb9a-aca5-4d75-85e5-170c8b632249"
 authors = ["Takafumi Arakaki <aka.tkf@gmail.com> and contributors"]
-version = "0.1.5"
+version = "0.2.0"
 
 [deps]
 LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 UnsafeAtomics = "013be700-e6cd-48c3-b4a1-df204f14c38f"
 
 [compat]
-LLVM = "6, 7, 8"
+LLVM = "8.1"
 UnsafeAtomics = "0.2"
-julia = "1.6"
+julia = "1.10"

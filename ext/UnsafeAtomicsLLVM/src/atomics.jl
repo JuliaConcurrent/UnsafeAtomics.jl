@@ -248,13 +248,14 @@ const binoptable = [
     (:umin, min, LLVM.API.LLVMAtomicRMWBinOpUMin),
     (:fadd, +, LLVM.API.LLVMAtomicRMWBinOpFAdd),
     (:fsub, -, LLVM.API.LLVMAtomicRMWBinOpFSub),
+    (:fmax, max, LLVM.API.LLVMAtomicRMWBinOpFMax),
+    (:fmin, min, LLVM.API.LLVMAtomicRMWBinOpFMin),
 ]
-if VERSION ≥ v"1.10-"
-    push!(binoptable, (:fmax, max, LLVM.API.LLVMAtomicRMWBinOpFMax))
-    push!(binoptable, (:fmin, min, LLVM.API.LLVMAtomicRMWBinOpFMin))
-end
 
 const AtomicRMWBinOpVal = Union{(Val{binop} for (_, _, binop) in binoptable)...}
+
+# LLVM API accepts string literal as a syncscope argument.
+@inline syncscope_to_string(::Type{Val{S}}) where {S} = string(S)
 
 @generated function llvm_atomic_op(
     binop::AtomicRMWBinOpVal,
@@ -289,6 +290,40 @@ const AtomicRMWBinOpVal = Union{(Val{binop} for (_, _, binop) in binoptable)...}
             ret!(builder, rv)
         end
 
+        call_function(llvm_f, T, Tuple{LLVMPtr{T,A},T}, :ptr, :val)
+    end
+end
+
+@generated function llvm_atomic_op(
+    binop::AtomicRMWBinOpVal,
+    ptr::LLVMPtr{T,A},
+    val::T,
+    order::LLVMOrderingVal,
+    syncscope::Val{S},
+) where {T,A,S}
+    @dispose ctx = Context() begin
+        T_val = convert(LLVMType, T)
+        T_ptr = convert(LLVMType, ptr)
+
+        T_typed_ptr = LLVM.PointerType(T_val, A)
+        llvm_f, _ = create_function(T_val, [T_ptr, T_val])
+
+        @dispose builder = IRBuilder() begin
+            entry = BasicBlock(llvm_f, "entry")
+            position!(builder, entry)
+
+            typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
+            rv = atomic_rmw!(
+                builder,
+                _valueof(binop()),
+                typed_ptr,
+                parameters(llvm_f)[2],
+                _valueof(order()),
+                syncscope_to_string(syncscope),
+            )
+
+            ret!(builder, rv)
+        end
         call_function(llvm_f, T, Tuple{LLVMPtr{T,A},T}, :ptr, :val)
     end
 end
@@ -359,8 +394,18 @@ for (opname, op, llvmop) in binoptable
             ::$(typeof(op)),
             x::$T,
             order::AtomicOrdering,
-        )
-            old = llvm_atomic_op($(Val(llvmop)), ptr, x, llvm_from_julia_ordering(order))
+            syncscope::Val{S} = Val{:system}(),
+        ) where {S}
+            old =
+                syncscope isa Val{:system} ?
+                llvm_atomic_op($(Val(llvmop)), ptr, x, llvm_from_julia_ordering(order)) :
+                llvm_atomic_op(
+                    $(Val(llvmop)),
+                    ptr,
+                    x,
+                    llvm_from_julia_ordering(order),
+                    syncscope,
+                )
             return old => $op(old, x)
         end
     end
