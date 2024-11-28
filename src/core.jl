@@ -48,6 +48,8 @@ for (op, rmwop) in OP_RMW_TABLE
         first(UnsafeAtomics.modify!(ptr, $op, x, ord))
 end
 
+const ATOMIC_INTRINSICS = isdefined(Core.Intrinsics, :atomic_pointerref)
+
 # Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
 for typ in (inttypes..., floattypes...)
     lt = llvmtypes[typ]
@@ -56,7 +58,7 @@ for typ in (inttypes..., floattypes...)
     for ord in orderings
         ord in (release, acq_rel) && continue
 
-        if isdefined(Core.Intrinsics, :atomic_pointerref)
+        if ATOMIC_INTRINSICS
             @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)))
                 base_ord = llvm_ordering($ord)
                 return Core.Intrinsics.atomic_pointerref(x, base_ord)
@@ -80,7 +82,7 @@ for typ in (inttypes..., floattypes...)
     for ord in orderings
         ord in (acquire, acq_rel) && continue
 
-        if isdefined(Core.Intrinsics, :atomic_pointerset)
+        if ATOMIC_INTRINSICS
             @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)))
                 base_ord = llvm_ordering($ord)
                 return Core.Intrinsics.atomic_pointerset(x, v, base_ord)
@@ -107,7 +109,7 @@ for typ in (inttypes..., floattypes...)
 
         typ <: AbstractFloat && break
 
-        if isdefined(Core.Intrinsics, :atomic_pointerreplace)
+        if ATOMIC_INTRINSICS
             @eval function UnsafeAtomics.cas!(
                 x::Ptr{$typ},
                 cmp::$typ,
