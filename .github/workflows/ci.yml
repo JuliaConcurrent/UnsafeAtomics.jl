@@ -13,15 +13,16 @@ jobs:
     strategy:
       matrix:
         julia-version:
-          - '1.6'
-          - '~1.7.0-beta4'
+          - 'lts'
+          - '1.11'
+          - '1.12-nightly'
           - 'nightly'
       fail-fast: false
     name: Test Julia ${{ matrix.julia-version }}
     steps:
       - uses: actions/checkout@v2
       - name: Setup julia
-        uses: julia-actions/setup-julia@v1
+        uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.julia-version }}
       - uses: julia-actions/julia-runtest@v1
@@ -31,37 +32,3 @@ jobs:
           file: ./lcov.info
           flags: unittests
           name: codecov-umbrella
-
-  aqua:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        julia-version:
-          - '1'
-          - '1.6'
-          - 'nightly'
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@v1
-        with:
-          version: ${{ matrix.julia-version }}
-      - uses: tkf/julia-aqua@v1
-
-  # https://github.com/tkf/julia-code-style-suggesters
-  code-style:
-    if: always() && github.event.pull_request
-    runs-on: ubuntu-latest
-    steps:
-      - uses: tkf/julia-code-style-suggesters@v1
-
-  # A job that succeeds if and only if all jobs succeed.
-  all-success:
-    if: always() && github.event.pull_request
-    needs: [test, aqua, code-style]
-    runs-on: ubuntu-latest
-    steps:
-      # https://github.com/tkf/merge-conclusions-action
-      - uses: tkf/merge-conclusions-action@v1
-        with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
