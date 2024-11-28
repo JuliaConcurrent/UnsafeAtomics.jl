@@ -50,6 +50,14 @@ end
 
 const ATOMIC_INTRINSICS = isdefined(Core.Intrinsics, :atomic_pointerref)
 
+if VERSION >= v"1.12.0-DEV.161" && Int == Int64
+const MAX_ATOMIC_SIZE = 16
+const MAX_POINTERATOMIC_SIZE = 16
+else
+const MAX_ATOMIC_SIZE = 8
+const MAX_POINTERATOMIC_SIZE = 8
+end
+
 # Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
 for typ in (inttypes..., floattypes...)
     lt = llvmtypes[typ]
@@ -58,10 +66,9 @@ for typ in (inttypes..., floattypes...)
     for ord in orderings
         ord in (release, acq_rel) && continue
 
-        if ATOMIC_INTRINSICS
+        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
             @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)))
-                base_ord = llvm_ordering($ord)
-                return Core.Intrinsics.atomic_pointerref(x, base_ord)
+                return Core.Intrinsics.atomic_pointerref(x, base_ordering($ord))
             end
         else
             @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)))
@@ -82,10 +89,10 @@ for typ in (inttypes..., floattypes...)
     for ord in orderings
         ord in (acquire, acq_rel) && continue
 
-        if ATOMIC_INTRINSICS
+        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
             @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)))
-                base_ord = llvm_ordering($ord)
-                return Core.Intrinsics.atomic_pointerset(x, v, base_ord)
+                Core.Intrinsics.atomic_pointerset(x, v, base_ordering($ord))
+                return nothing
             end
         else
             @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)))
@@ -109,7 +116,7 @@ for typ in (inttypes..., floattypes...)
 
         typ <: AbstractFloat && break
 
-        if ATOMIC_INTRINSICS
+        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
             @eval function UnsafeAtomics.cas!(
                 x::Ptr{$typ},
                 cmp::$typ,
@@ -117,14 +124,12 @@ for typ in (inttypes..., floattypes...)
                 ::$(typeof(success_ordering)),
                 ::$(typeof(failure_ordering)),
             )
-                base_success_ordering = llvm_ordering($success_ordering)
-                base_failure_ordering = llvm_ordering($failure_ordering)
                 return Core.Intrinsics.atomic_pointerreplace(
                     x,
                     cmp,
                     new,
-                    base_success_ordering,
-                    base_failure_ordering
+                    base_ordering($success_ordering),
+                    base_ordering($failure_ordering)
                 )
             end
         else
@@ -180,24 +185,35 @@ for typ in (inttypes..., floattypes...)
             end
         end
         for ord in orderings
-            @eval function UnsafeAtomics.modify!(
-                x::Ptr{$typ},
-                ::typeof($op),
-                v::$typ,
-                ::$(typeof(ord)),
-            )
-                old = llvmcall(
-                    $("""
-                    %ptr = inttoptr i$WORD_SIZE %0 to $lt*
-                    %rv = atomicrmw $rmw $lt* %ptr, $lt %1 $ord
-                    ret $lt %rv
-                    """),
-                    $typ,
-                    Tuple{Ptr{$typ},$typ},
-                    x,
-                    v,
+            if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
+                @eval function UnsafeAtomics.modify!(
+                        x::Ptr{$typ},
+                        op::typeof($op),
+                        v::$typ,
+                        ::$(typeof(ord)),
+                    )
+                        return Core.Intrinsics.atomic_pointermodify(x, op, v, base_ordering($ord))
+                end
+            else
+                @eval function UnsafeAtomics.modify!(
+                    x::Ptr{$typ},
+                    ::typeof($op),
+                    v::$typ,
+                    ::$(typeof(ord)),
                 )
-                return old => $op(old, v)
+                    old = llvmcall(
+                        $("""
+                        %ptr = inttoptr i$WORD_SIZE %0 to $lt*
+                        %rv = atomicrmw $rmw $lt* %ptr, $lt %1 $ord
+                        ret $lt %rv
+                        """),
+                        $typ,
+                        Tuple{Ptr{$typ},$typ},
+                        x,
+                        v,
+                    )
+                    return old => $op(old, v)
+                end
             end
         end
     end
