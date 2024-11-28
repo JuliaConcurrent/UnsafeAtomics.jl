@@ -185,7 +185,8 @@ for typ in (inttypes..., floattypes...)
             end
         end
         for ord in orderings
-            if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
+            # Enable this code iff https://github.com/JuliaLang/julia/pull/45122 get's merged
+            if false && ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
                 @eval function UnsafeAtomics.modify!(
                         x::Ptr{$typ},
                         op::typeof($op),
