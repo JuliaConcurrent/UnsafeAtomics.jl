@@ -1,14 +1,22 @@
 name = "UnsafeAtomics"
 uuid = "013be700-e6cd-48c3-b4a1-df204f14c38f"
 authors = ["Takafumi Arakaki <aka.tkf@gmail.com> and contributors"]
-version = "0.2.2-DEV"
+version = "0.3.0"
+
+[weakdeps]
+LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
+
+[extensions]
+UnsafeAtomicsLLVM = ["LLVM"]
 
 [compat]
-julia = "1.6"
+LLVM = "8.1, 9"
+julia = "1.10"
 
 [extras]
+LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestFunctionRunner = "792026f5-ac9a-4a19-adcb-47b0ce2deb5d"
 
 [targets]
-test = ["Test", "TestFunctionRunner"]
+test = ["Test", "TestFunctionRunner", "LLVM"]
