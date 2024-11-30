@@ -1,6 +1,6 @@
 module TestCore
 
-using UnsafeAtomics: UnsafeAtomics, acquire, release, acq_rel, right
+using UnsafeAtomics: UnsafeAtomics, monotonic, acquire, release, acq_rel, seq_cst, right
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
 using Test
 
@@ -16,6 +16,7 @@ function test_default_ordering()
     @testset for T in (asbits(T) for T in inttypes if T <: Unsigned)
         test_default_ordering(T)
     end
+    UnsafeAtomics.fence()
 end
 
 rmw_table_for(@nospecialize T) =
@@ -58,6 +59,11 @@ function test_explicit_ordering()
     @testset for T in [UInt, Float64]
         test_explicit_ordering(T)
     end
+    UnsafeAtomics.fence(monotonic)
+    UnsafeAtomics.fence(acquire)
+    UnsafeAtomics.fence(release)
+    UnsafeAtomics.fence(acq_rel)
+    UnsafeAtomics.fence(seq_cst)
 end
 
 function test_explicit_ordering(T::Type)

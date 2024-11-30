@@ -2,6 +2,7 @@
 @inline UnsafeAtomics.store!(x, v) = UnsafeAtomics.store!(x, v, seq_cst)
 @inline UnsafeAtomics.cas!(x, cmp, new) = UnsafeAtomics.cas!(x, cmp, new, seq_cst, seq_cst)
 @inline UnsafeAtomics.modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, seq_cst)
+@inline UnsafeAtomics.fence() = UnsafeAtomics.fence(seq_cst)
 
 #! format: off
 # https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L23-L30
@@ -218,7 +219,28 @@ for typ in (inttypes..., floattypes...)
             end
         end
     end
+end
 
+# Core.Intrinsics.atomic_fence was introduced in 1.10
+function UnsafeAtomics.fence(ord::Ordering)
+    Core.Intrinsics.atomic_fence(base_ordering(ord))
+    return nothing
+end
+if Sys.ARCH == :x86_64
+    # FIXME: Disable this once on LLVM 19
+    # This is unfortunatly required for good-performance on AMD
+    # https://github.com/llvm/llvm-project/pull/106555
+    function UnsafeAtomics.fence(::typeof(seq_cst))
+        Base.llvmcall(
+            (raw"""
+            define void @fence() #0 {
+            entry:
+                tail call void asm sideeffect "lock orq $$0 , (%rsp)", ""(); should this have ~{memory}
+                ret void
+            }
+            attributes #0 = { alwaysinline }
+            """, "fence"), Nothing, Tuple{})
+    end
 end
 
 as_native_uint(::Type{T}) where {T} =
