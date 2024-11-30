@@ -6,6 +6,7 @@ function load end
 function store! end
 function cas! end
 function modify! end
+function fence end
 
 function add! end
 function sub! end
@@ -17,6 +18,7 @@ function xor! end
 function max! end
 function min! end
 
+# =>
 right(_, x) = x
 
 module Internal
