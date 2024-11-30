@@ -10,6 +10,10 @@ function check_default_ordering(T::Type)
     xs = T[rand(T), rand(T)]
     x1 = rand(T)
     x2 = rand(T)
+    check_default_ordering(xs, x1, x2)
+end
+
+function check_default_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
     @debug "xs=$(repr(xs)) x1=$(repr(x1)) x2=$(repr(x2))"
 
     ptr = llvmptr(xs, 1)
@@ -17,6 +21,7 @@ function check_default_ordering(T::Type)
         @test UnsafeAtomics.load(ptr) === xs[1]
         UnsafeAtomics.store!(ptr, x1)
         @test xs[1] === x1
+        sizeof(T) == 0 && return # CAS hangs on zero sized data...
         desired = (old = x1, success = true)
         @test UnsafeAtomics.cas!(ptr, x1, x2) === (old = x1, success = true)
         @test xs[1] === x2
@@ -37,6 +42,10 @@ function test_explicit_ordering(T::Type = UInt)
     xs = T[rand(T), rand(T)]
     x1 = rand(T)
     x2 = rand(T)
+    test_explicit_ordering(xs, x1, x2)
+end
+
+function test_explicit_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
     @debug "xs=$(repr(xs)) x1=$(repr(x1)) x2=$(repr(x2))"
 
     ptr = llvmptr(xs, 1)
@@ -45,6 +54,7 @@ function test_explicit_ordering(T::Type = UInt)
         @test UnsafeAtomics.load(ptr, acquire) === xs[1]
         UnsafeAtomics.store!(ptr, x1, release)
         @test xs[1] === x1
+        sizeof(T) == 0 && return # CAS hangs on zero sized data...
         desired = (old = x1, success = true)
         @test UnsafeAtomics.cas!(ptr, x1, x2, acq_rel, acquire) === desired
         @test xs[1] === x2
@@ -74,9 +84,16 @@ function test_explicit_ordering(T::Type = UInt)
     end
 end
 
+
 @testset "UnsafeAtomicsLLVM" begin
     @testset for T in inttypes
         check_default_ordering(T)
         test_explicit_ordering(T)
+    end
+
+    @testset "Zero-sized types" begin
+        @test sizeof(Nothing) == 0
+        check_default_ordering([nothing, nothing], nothing, nothing)
+        test_explicit_ordering([nothing, nothing], nothing, nothing)
     end
 end
