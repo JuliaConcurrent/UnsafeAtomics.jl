@@ -4,6 +4,12 @@
 @inline UnsafeAtomics.modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, seq_cst)
 @inline UnsafeAtomics.fence() = UnsafeAtomics.fence(seq_cst)
 
+@inline UnsafeAtomics.load(x, ord) = UnsafeAtomics.load(x, ord, none)
+@inline UnsafeAtomics.store!(x, v, ord) = UnsafeAtomics.store!(x, v, ord, none)
+@inline UnsafeAtomics.cas!(x, cmp, new, ord) = UnsafeAtomics.cas!(x, cmp, new, ord, ord, none)
+@inline UnsafeAtomics.modify!(ptr, op, x, ord) = UnsafeAtomics.modify!(ptr, op, x, ord, none)
+@inline UnsafeAtomics.fence(ord) = UnsafeAtomics.fence(ord., none)
+
 #! format: off
 # https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L23-L30
 if Sys.ARCH == :i686 || startswith(string(Sys.ARCH), "arm") ||
@@ -45,8 +51,9 @@ const OP_RMW_TABLE = [
 for (op, rmwop) in OP_RMW_TABLE
     fn = Symbol(rmwop, "!")
     @eval @inline UnsafeAtomics.$fn(x, v) = UnsafeAtomics.$fn(x, v, seq_cst)
-    @eval @inline UnsafeAtomics.$fn(ptr, x, ord) =
-        first(UnsafeAtomics.modify!(ptr, $op, x, ord))
+    @eval @inline UnsafeAtomics.$fn(x, v, ord) = UnsafeAtomics.$fn(x, v, ord, none) 
+    @eval @inline UnsafeAtomics.$fn(ptr, x, ord, scope) =
+        first(UnsafeAtomics.modify!(ptr, $op, x, ord, scope))
 end
 
 const ATOMIC_INTRINSICS = isdefined(Core.Intrinsics, :atomic_pointerref)

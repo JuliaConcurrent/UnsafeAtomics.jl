@@ -1,6 +1,7 @@
 baremodule UnsafeAtomics
 
 abstract type Ordering end
+abstract type SyncScope end
 
 function load end
 function store! end
@@ -30,6 +31,7 @@ using ..UnsafeAtomics: UnsafeAtomics, Ordering, right
 
 include("utils.jl")
 include("orderings.jl")
+include("syncscopes.jl")
 include("core.jl")
 
 end  # module Internal
@@ -44,5 +46,9 @@ const seq_cst = Internal.seq_cst
 # Julia names
 const acquire_release = acq_rel
 const sequentially_consistent = seq_cst
+
+# SyncScope
+const none = Internal.none
+const singlethread = Internal.singlethread
 
 end  # baremodule UnsafeAtomics
