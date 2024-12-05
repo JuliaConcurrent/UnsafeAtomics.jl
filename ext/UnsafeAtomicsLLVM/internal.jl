@@ -4,30 +4,33 @@ julia_ordering_name(::typeof(UnsafeAtomics.acquire_release)) = :acquire_release
 julia_ordering_name(::typeof(UnsafeAtomics.sequentially_consistent)) =
     :sequentially_consistent
 
+julia_syncscope_name(::UnsafeAtomics.Internal.LLVMSyncScope{name}) where {name} = name
+julia_syncscope_name(::typeof(UnsafeAtomics.none)) = :system
+
 include("atomics.jl")
 
-@inline UnsafeAtomics.load(ptr::LLVMPtr, order::Ordering) =
-    atomic_pointerref(ptr, Val{julia_ordering_name(order)}())
+@inline UnsafeAtomics.load(ptr::LLVMPtr, order::Ordering, sync::SyncScope) =
+    atomic_pointerref(ptr, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
 
-@inline function UnsafeAtomics.store!(ptr::LLVMPtr, x, order::Ordering)
-    atomic_pointerset(ptr, x, Val{julia_ordering_name(order)}())
+@inline function UnsafeAtomics.store!(ptr::LLVMPtr, x, order::Ordering, sync::SyncScope)
+    atomic_pointerset(ptr, x, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
     return
 end
 
 mapop(op::OP) where {OP} = op
 mapop(::typeof(UnsafeAtomics.right)) = right
 
-@inline UnsafeAtomics.modify!(ptr::LLVMPtr, op::OP, x, order::Ordering) where {OP} =
-    atomic_pointermodify(ptr, mapop(op), x, Val{julia_ordering_name(order)}())
+@inline UnsafeAtomics.modify!(ptr::LLVMPtr, op::OP, x, order::Ordering, sync::SyncScope) where {OP} =
+    atomic_pointermodify(ptr, mapop(op), x, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
 
 @inline UnsafeAtomics.modify!(
     ptr::LLVMPtr,
     op::OP,
     x,
     order::Ordering,
-    syncscope::Val{S} = Val(:system),
+    sync::SyncScope,
 ) where {OP<:Union{typeof(+),typeof(-)},S} =
-    atomic_pointermodify(ptr, mapop(op), x, Val{julia_ordering_name(order)}(), syncscope)
+    atomic_pointermodify(ptr, mapop(op), x, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
 
 @inline UnsafeAtomics.cas!(
     ptr::LLVMPtr,
@@ -35,10 +38,12 @@ mapop(::typeof(UnsafeAtomics.right)) = right
     desired,
     success_order::Ordering,
     failure_order::Ordering,
+    sync::SyncScope,
 ) = atomic_pointerreplace(
     ptr,
     expected,
     desired,
     Val{julia_ordering_name(success_order)}(),
     Val{julia_ordering_name(failure_order)}(),
+    Val{julia_syncscope_name(sync)}(),
 )
