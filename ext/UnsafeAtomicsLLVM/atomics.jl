@@ -274,24 +274,6 @@ end
     end
 end
 
-@inline function atomic_pointermodify(pointer, op::OP, x, order::Symbol) where {OP}
-    @dynamic_order(order) do order
-        atomic_pointermodify(pointer, op, x, order)
-    end
-end
-
-@inline function atomic_pointermodify(
-    ptr::LLVMPtr{T},
-    op,
-    x::T,
-    ::Val{:not_atomic},
-) where {T}
-    old = atomic_pointerref(ptr, Val(:not_atomic))
-    new = op(old, x)
-    atomic_pointerset(ptr, new, Val(:not_atomic))
-    return old => new
-end
-
 @inline function atomic_pointermodify(
     ptr::LLVMPtr{T},
     ::typeof(right),
@@ -459,32 +441,6 @@ end
             (; old, success = success[] != zero(Int8))
         end
     end
-end
-
-@inline function atomic_pointerreplace(
-    pointer,
-    expected,
-    desired,
-    success_order::Symbol,
-    fail_order::Symbol,
-)
-    # This avoids abstract dispatch at run-time but probably too much codegen?
-    #=
-    @dynamic_order(success_order) do success_order
-        @dynamic_order(fail_order) do fail_order
-            atomic_pointerreplace(pointer, expected, desired, success_order, fail_order)
-        end
-    end
-    =#
-
-    # This avoids excessive codegen while hopefully imposes no cost when const-prop works:
-    so = @dynamic_order(success_order) do success_order
-        success_order
-    end
-    fo = @dynamic_order(fail_order) do fail_order
-        fail_order
-    end
-    return atomic_pointerreplace(pointer, expected, desired, so, fo)
 end
 
 @inline function atomic_pointerreplace(
