@@ -9,10 +9,10 @@ julia_syncscope_name(::typeof(UnsafeAtomics.none)) = :system
 
 include("atomics.jl")
 
-@inline UnsafeAtomics.load(ptr::LLVMPtr, order::Ordering, sync::SyncScope) =
+@inline UnsafeAtomics.load(ptr::LLVMPtr, order::Ordering, sync::UnsafeAtomics.Internal.SyncScope) =
     atomic_pointerref(ptr, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
 
-@inline function UnsafeAtomics.store!(ptr::LLVMPtr, x, order::Ordering, sync::SyncScope)
+@inline function UnsafeAtomics.store!(ptr::LLVMPtr, x, order::Ordering, sync::UnsafeAtomics.Internal.SyncScope)
     atomic_pointerset(ptr, x, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
     return
 end
@@ -20,16 +20,7 @@ end
 mapop(op::OP) where {OP} = op
 mapop(::typeof(UnsafeAtomics.right)) = right
 
-@inline UnsafeAtomics.modify!(ptr::LLVMPtr, op::OP, x, order::Ordering, sync::SyncScope) where {OP} =
-    atomic_pointermodify(ptr, mapop(op), x, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
-
-@inline UnsafeAtomics.modify!(
-    ptr::LLVMPtr,
-    op::OP,
-    x,
-    order::Ordering,
-    sync::SyncScope,
-) where {OP<:Union{typeof(+),typeof(-)},S} =
+@inline UnsafeAtomics.modify!(ptr::LLVMPtr, op::OP, x, order::Ordering, sync::UnsafeAtomics.Internal.SyncScope) where {OP} =
     atomic_pointermodify(ptr, mapop(op), x, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
 
 @inline UnsafeAtomics.cas!(
@@ -38,7 +29,7 @@ mapop(::typeof(UnsafeAtomics.right)) = right
     desired,
     success_order::Ordering,
     failure_order::Ordering,
-    sync::SyncScope,
+    sync::UnsafeAtomics.Internal.SyncScope,
 ) = atomic_pointerreplace(
     ptr,
     expected,

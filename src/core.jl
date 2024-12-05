@@ -7,6 +7,7 @@
 @inline UnsafeAtomics.load(x, ord) = UnsafeAtomics.load(x, ord, none)
 @inline UnsafeAtomics.store!(x, v, ord) = UnsafeAtomics.store!(x, v, ord, none)
 @inline UnsafeAtomics.cas!(x, cmp, new, ord) = UnsafeAtomics.cas!(x, cmp, new, ord, ord, none)
+@inline UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_order) = UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_order, none)
 @inline UnsafeAtomics.modify!(ptr, op, x, ord) = UnsafeAtomics.modify!(ptr, op, x, ord, none)
 @inline UnsafeAtomics.fence(ord) = UnsafeAtomics.fence(ord, none)
 
@@ -294,20 +295,20 @@ as_native_uint(::Type{T}) where {T} =
         error(LazyString("unsupported size: ", sizeof(T)))
     end
 
-function UnsafeAtomics.load(x::Ptr{T}, ordering) where {T}
+function UnsafeAtomics.load(x::Ptr{T}, ordering, syncscope) where {T}
     UI = as_native_uint(T)
-    v = UnsafeAtomics.load(Ptr{UI}(x), ordering)
+    v = UnsafeAtomics.load(Ptr{UI}(x), ordering, syncscope)
     return bitcast(T, v)
 end
 
-function UnsafeAtomics.store!(x::Ptr{T}, v::T, ordering) where {T}
+function UnsafeAtomics.store!(x::Ptr{T}, v::T, ordering, syncscope) where {T}
     UI = as_native_uint(T)
-    UnsafeAtomics.store!(Ptr{UI}(x), bitcast(UI, v), ordering)::Nothing
+    UnsafeAtomics.store!(Ptr{UI}(x), bitcast(UI, v), ordering, syncscope)::Nothing
 end
 
-function UnsafeAtomics.modify!(x::Ptr{T}, ::typeof(right), v::T, ordering) where {T}
+function UnsafeAtomics.modify!(x::Ptr{T}, ::typeof(right), v::T, ordering, syncscope) where {T}
     UI = as_native_uint(T)
-    old, _ = UnsafeAtomics.modify!(Ptr{UI}(x), right, bitcast(UI, v), ordering)
+    old, _ = UnsafeAtomics.modify!(Ptr{UI}(x), right, bitcast(UI, v), ordering, syncscope)
     return bitcast(T, old) => v
 end
 
@@ -317,6 +318,7 @@ function UnsafeAtomics.cas!(
     new::T,
     success_ordering,
     failure_ordering,
+    syncscope,
 ) where {T}
     UI = as_native_uint(T)
     (old, success) = UnsafeAtomics.cas!(
@@ -325,6 +327,7 @@ function UnsafeAtomics.cas!(
         bitcast(UI, new),
         success_ordering,
         failure_ordering,
+        syncscope
     )
     return (old = bitcast(T, old), success = success)
 end

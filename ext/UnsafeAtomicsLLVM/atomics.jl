@@ -240,42 +240,6 @@ const AtomicRMWBinOpVal = Union{(Val{binop} for (_, _, binop) in binoptable)...}
     end
 end
 
-@generated function llvm_atomic_op(
-    binop::AtomicRMWBinOpVal,
-    ptr::LLVMPtr{T,A},
-    val::T,
-    order::LLVMOrderingVal,
-    sync,
-) where {T,A}
-    @dispose ctx = Context() begin
-        T_val = convert(LLVMType, T)
-        T_ptr = convert(LLVMType, ptr)
-
-        T_typed_ptr = LLVM.PointerType(T_val, A)
-        llvm_f, _ = create_function(T_val, [T_ptr, T_val])
-
-        llvm_syncscope = _valueof(sync())
-
-        @dispose builder = IRBuilder() begin
-            entry = BasicBlock(llvm_f, "entry")
-            position!(builder, entry)
-
-            typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
-            rv = atomic_rmw!(
-                builder,
-                _valueof(binop()),
-                typed_ptr,
-                parameters(llvm_f)[2],
-                _valueof(order()),
-                SyncScope(string(llvm_syncscope)),
-            )
-
-            ret!(builder, rv)
-        end
-        call_function(llvm_f, T, Tuple{LLVMPtr{T,A},T}, :ptr, :val)
-    end
-end
-
 @generated function llvm_atomic_cas(
     ptr::LLVMPtr{T,A},
     cmp::T,
