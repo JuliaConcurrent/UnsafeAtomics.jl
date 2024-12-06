@@ -13,4 +13,4 @@ Base.string(s::typeof(none)) = ""
 
 Base.print(io::IO, s::LLVMSyncScope) = print(io, string(s))
 
-Base.show(io::IO, o::ConcreteSyncScopes) = print(io, UnsafeAtomics, '.', llvm_ordering(o))
+Base.show(io::IO, o::ConcreteSyncScopes) = print(io, UnsafeAtomics, '.', llvm_syncscope(o))

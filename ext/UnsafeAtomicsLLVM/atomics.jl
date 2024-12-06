@@ -257,22 +257,23 @@ end
     return old => x
 end
 
-@inline atomic_pointerswap(pointer, new) = first(atomic_pointermodify(pointer, right, new))
-@inline atomic_pointerswap(pointer, new, order) =
-    first(atomic_pointermodify(pointer, right, new, order))
+# @inline atomic_pointerswap(pointer, new) = first(atomic_pointermodify(pointer, right, new))
+@inline atomic_pointerswap(pointer, new, order, sync) =
+    first(atomic_pointermodify(pointer, right, new, order, sync))
 
 @inline function atomic_pointermodify(
     ptr::LLVMPtr{T},
     op,
     x::T,
     order::AllOrdering,
-) where {T}
+    sync::S,
+) where {T, S}
     # Should `fail_order` be stronger?  Ref: https://github.com/JuliaLang/julia/issues/45256
     fail_order = Val(:monotonic)
-    old = atomic_pointerref(ptr, fail_order)
+    old = atomic_pointerref(ptr, fail_order, sync)
     while true
         new = op(old, x)
-        (old, success) = atomic_pointerreplace(ptr, old, new, order, fail_order)
+        (old, success) = atomic_pointerreplace(ptr, old, new, order, fail_order, sync)
         success && return old => new
     end
 end
@@ -367,10 +368,11 @@ end
     desired::T,
     ::Val{:not_atomic},
     ::Val{:not_atomic},
+    sync,
 ) where {T}
-    old = atomic_pointerref(ptr, Val(:not_atomic))
+    old = atomic_pointerref(ptr, Val(:not_atomic), sync)
     if old === expected
-        atomic_pointerset(ptr, desired, Val(:not_atomic))
+        atomic_pointerset(ptr, desired, Val(:not_atomic), sync)
         success = true
     else
         success = false
@@ -384,10 +386,12 @@ end
     desired::T,
     success_order::_julia_ordering(∉((:not_atomic, :unordered))),
     fail_order::_julia_ordering(∉((:not_atomic, :unordered, :release, :acquire_release))),
+    sync
 ) where {T} = llvm_atomic_cas(
     ptr,
     expected,
     desired,
     llvm_from_julia_ordering(success_order),
     llvm_from_julia_ordering(fail_order),
+    sync
 )
