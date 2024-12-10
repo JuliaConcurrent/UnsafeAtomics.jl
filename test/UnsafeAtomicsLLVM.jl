@@ -71,12 +71,12 @@ function test_explicit_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
             # Test syncscopes.
             if (op == +) || (op == -)
                 xs[1] = x1
-                @test UnsafeAtomics.modify!(ptr, op, x2, seq_cst, Val(:system)) ===
+                @test UnsafeAtomics.modify!(ptr, op, x2, seq_cst, UnsafeAtomics.none) ===
                       (x1 => op(x1, x2))
                 @test xs[1] === op(x1, x2)
 
                 xs[1] = x1
-                @test UnsafeAtomics.modify!(ptr, op, x2, seq_cst, Val(:singlethread)) ===
+                @test UnsafeAtomics.modify!(ptr, op, x2, seq_cst, UnsafeAtomics.singlethread) ===
                       (x1 => op(x1, x2))
                 @test xs[1] === op(x1, x2)
             end
