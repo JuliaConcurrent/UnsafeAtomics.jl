@@ -1,4 +1,5 @@
 import LLVM
+import InteractiveUtils
 
 using UnsafeAtomics: UnsafeAtomics, acquire, release, acq_rel, seq_cst
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes
@@ -34,6 +35,15 @@ function check_default_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
             xs[1] = x1
             @test rmw(ptr, x2) === x1
             @test xs[1] === op(x1, x2)
+
+            # Check dispatch to LLVM atomic OP instead of CAS loop.
+            if (op == +) || (op == -)
+                iob = IOBuffer()
+                InteractiveUtils.code_llvm(iob,
+                    UnsafeAtomics.modify!,
+                    typeof.((ptr, +, T(1))))
+                @test occursin("atomicrmw", String(take!(iob)))
+            end
         end
     end
 end
@@ -79,6 +89,15 @@ function test_explicit_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
                 @test UnsafeAtomics.modify!(ptr, op, x2, seq_cst, UnsafeAtomics.singlethread) ===
                       (x1 => op(x1, x2))
                 @test xs[1] === op(x1, x2)
+            end
+
+            # Check dispatch to LLVM atomic OP instead of CAS loop.
+            if (op == +) || (op == -)
+                iob = IOBuffer()
+                InteractiveUtils.code_llvm(iob,
+                    UnsafeAtomics.modify!,
+                    typeof.((ptr, +, T(1), seq_cst, UnsafeAtomics.singlethread)))
+                @test occursin("atomicrmw", String(take!(iob)))
             end
         end
     end
