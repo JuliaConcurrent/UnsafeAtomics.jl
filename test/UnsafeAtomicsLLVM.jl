@@ -38,11 +38,10 @@ function check_default_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
 
             # Check dispatch to LLVM atomic OP instead of CAS loop.
             if (op == +) || (op == -)
-                iob = IOBuffer()
-                InteractiveUtils.code_llvm(iob,
+                IR = sprint(io->InteractiveUtils.code_llvm(io,
                     UnsafeAtomics.modify!,
-                    typeof.((ptr, +, T(1))))
-                @test occursin("atomicrmw", String(take!(iob)))
+                    typeof.((ptr, +, T(1)))))
+                @test occursin("atomicrmw", IR)
             end
         end
     end
@@ -93,11 +92,10 @@ function test_explicit_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
 
             # Check dispatch to LLVM atomic OP instead of CAS loop.
             if (op == +) || (op == -)
-                iob = IOBuffer()
-                InteractiveUtils.code_llvm(iob,
+                IR = sprint(io->InteractiveUtils.code_llvm(io,
                     UnsafeAtomics.modify!,
-                    typeof.((ptr, +, T(1), seq_cst, UnsafeAtomics.singlethread)))
-                @test occursin("atomicrmw", String(take!(iob)))
+                    typeof.((ptr, +, T(1), seq_cst, UnsafeAtomics.singlethread))))
+                @test occursin("atomicrmw", IR)
             end
         end
     end
