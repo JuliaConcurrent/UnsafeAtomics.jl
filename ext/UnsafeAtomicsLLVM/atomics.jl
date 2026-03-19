@@ -257,6 +257,48 @@ end
     return old => x
 end
 
+const atomictypes = Any[
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Int128,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    UInt128,
+    Float16,
+    Float32,
+    Float64,
+]
+
+for (opname, op, llvmop) in binoptable
+    opname === :xchg && continue
+    types = if opname in (:min, :max)
+        filter(t -> t <: Signed, atomictypes)
+    elseif opname in (:umin, :umax)
+        filter(t -> t <: Unsigned, atomictypes)
+    elseif opname in (:fadd, :fsub, :fmin, :fmax)
+        filter(t -> t <: AbstractFloat, atomictypes)
+    else
+        filter(t -> t <: Integer, atomictypes)
+    end
+    for T in types
+        @eval @inline function atomic_pointermodify(
+            ptr::LLVMPtr{$T},
+            ::$(typeof(op)),
+            x::$T,
+            order::AtomicOrdering,
+            sync::Val{S},
+        ) where {S}
+            old = llvm_atomic_op(
+                $(Val(llvmop)), ptr, x, llvm_from_julia_ordering(order), sync)
+            return old => $op(old, x)
+        end
+    end
+end
+
 # @inline atomic_pointerswap(pointer, new) = first(atomic_pointermodify(pointer, right, new))
 @inline atomic_pointerswap(pointer, new, order, sync) =
     first(atomic_pointermodify(pointer, right, new, order, sync))
