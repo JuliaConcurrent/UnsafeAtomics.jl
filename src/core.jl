@@ -67,14 +67,13 @@ const MAX_ATOMIC_SIZE = 8
 const MAX_POINTERATOMIC_SIZE = 8
 end
 
-const OPAQUE_POINTERS = !(VERSION < v"1.12.0")
 
-if OPAQUE_POINTERS
+if VERSION < v"1.12.0"
     ptr(typ) = typ*"*"
-    inttoptr(_, arg) = "bitcast ptr $arg to ptr"
+    inttoptr(typ, arg) = "inttoptr i$WORD_SIZE $arg to $(ptr(typ))"
 else
     ptr(typ) = "ptr"
-    inttoptr(typ, arg) = "inttoptr i$WORD_SIZE $arg to $(ptr(typ))"
+    inttoptr(_, arg) = "bitcast ptr $arg to ptr"
 end
 
 # Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
