@@ -255,7 +255,11 @@ for sync in syncscopes
     if sync == none
         # Core.Intrinsics.atomic_fence was introduced in 1.10
         @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
+@static if VERSION < v"1.14.0-DEV.1371"
             Core.Intrinsics.atomic_fence(base_ordering(ord))
+else
+            Core.Intrinsics.atomic_fence(base_ordering(ord), :system)
+end
             return nothing
         end
         if Sys.ARCH == :x86_64

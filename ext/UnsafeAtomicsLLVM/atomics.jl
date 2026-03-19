@@ -139,7 +139,11 @@ end
         # See: https://github.com/JuliaLang/julia/blob/v1.7.2/src/cgutils.cpp#L1570-L1572
         return quote
             is_stronger_than_monotonic(_valueof(order)) || return ptr
+@static if VERSION < v"1.14.0-DEV.1371"
             Core.Intrinsics.atomic_fence(_valueof(order))
+else
+            Core.Intrinsics.atomic_fence(_valueof(order), _valueof(sync))
+end
             return ptr
         end
     end
