@@ -137,10 +137,18 @@ end
     if sizeof(T) == 0
         # Mimicking what `Core.Intrinsics.atomic_pointerset` generates.
         # See: https://github.com/JuliaLang/julia/blob/v1.7.2/src/cgutils.cpp#L1570-L1572
-        return quote
-            is_stronger_than_monotonic(_valueof(order)) || return ptr
-            Core.Intrinsics.atomic_fence(_valueof(order))
-            return ptr
+        if VERSION < v"1.14.0-DEV.1371"
+            return quote
+                is_stronger_than_monotonic(_valueof(order)) || return ptr
+                Core.Intrinsics.atomic_fence(_valueof(order))
+                return ptr
+            end
+        else
+            return quote
+                is_stronger_than_monotonic(_valueof(order)) || return ptr
+                Core.Intrinsics.atomic_fence(_valueof(order), :system)
+                return ptr
+            end
         end
     end
     llvm_order     = _valueof(llvm_from_julia_ordering(order()))

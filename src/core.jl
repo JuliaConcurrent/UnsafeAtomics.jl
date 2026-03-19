@@ -67,10 +67,19 @@ const MAX_ATOMIC_SIZE = 8
 const MAX_POINTERATOMIC_SIZE = 8
 end
 
+
+if VERSION < v"1.12.0"
+    ptr(typ) = typ*"*"
+    inttoptr(typ, arg) = "inttoptr i$WORD_SIZE $arg to $(ptr(typ))"
+else
+    ptr(typ) = "ptr"
+    inttoptr(_, arg) = "bitcast ptr $arg to ptr"
+end
+
 # Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
 for typ in (inttypes..., floattypes...)
     lt = llvmtypes[typ]
-    rt = "$lt, $lt*"
+    rt = "$lt, $(ptr(lt))"
 
     for ord in orderings
         ord in (release, acq_rel) && continue
@@ -84,7 +93,7 @@ for typ in (inttypes..., floattypes...)
                 @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)), ::$(typeof(sync)))
                     return llvmcall(
                         $("""
-                        %ptr = inttoptr i$WORD_SIZE %0 to $lt*
+                        %ptr = $(inttoptr(lt, "%0"))
                         %rv = load atomic $rt %ptr $ord, align $(sizeof(typ))
                         ret $lt %rv
                         """),
@@ -110,8 +119,8 @@ for typ in (inttypes..., floattypes...)
                 @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)), ::$(typeof(sync)))
                     return llvmcall(
                         $("""
-                        %ptr = inttoptr i$WORD_SIZE %0 to $lt*
-                        store atomic $lt %1, $lt* %ptr $ord, align $(sizeof(typ))
+                        %ptr = $(inttoptr(lt, "%0"))
+                        store atomic $lt %1, $(ptr(lt)) %ptr $ord, align $(sizeof(typ))
                         ret void
                         """),
                         Cvoid,
@@ -161,13 +170,13 @@ for typ in (inttypes..., floattypes...)
                         old = llvmcall(
                             $(
                                 """
-                                %ptr = inttoptr i$WORD_SIZE %0 to $lt*
-                                %rs = cmpxchg $lt* %ptr, $lt %1, $lt %2 $success_ordering $failure_ordering
+                                %ptr = $(inttoptr(lt, "%0"))
+                                %rs = cmpxchg $(ptr(lt)) %ptr, $lt %1, $lt %2 $success_ordering $failure_ordering
                                 %rv = extractvalue { $lt, i1 } %rs, 0
                                 %s1 = extractvalue { $lt, i1 } %rs, 1
                                 %s8 = zext i1 %s1 to i8
-                                %sptr = inttoptr i$WORD_SIZE %3 to i8*
-                                store i8 %s8, i8* %sptr
+                                %sptr = $(inttoptr("i8", "%3"))
+                                store i8 %s8, $(ptr("i8")) %sptr
                                 ret $lt %rv
                                 """
                             ),
@@ -224,8 +233,8 @@ for typ in (inttypes..., floattypes...)
                     )
                         old = llvmcall(
                             $("""
-                            %ptr = inttoptr i$WORD_SIZE %0 to $lt*
-                            %rv = atomicrmw $rmw $lt* %ptr, $lt %1 $ord
+                            %ptr = $(inttoptr(lt, "%0"))
+                            %rv = atomicrmw $rmw $(ptr(lt)) %ptr, $lt %1 $ord
                             ret $lt %rv
                             """),
                             $typ,
@@ -244,9 +253,16 @@ end
 for sync in syncscopes
     if sync == none
         # Core.Intrinsics.atomic_fence was introduced in 1.10
-        @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
-            Core.Intrinsics.atomic_fence(base_ordering(ord))
-            return nothing
+        if VERSION < v"1.14.0-DEV.1371"
+            @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
+                Core.Intrinsics.atomic_fence(base_ordering(ord))
+                return nothing
+            end
+        else
+            @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
+                Core.Intrinsics.atomic_fence(base_ordering(ord), :system)
+                return nothing
+            end
         end
         if Sys.ARCH == :x86_64
             # FIXME: Disable this once on LLVM 19
