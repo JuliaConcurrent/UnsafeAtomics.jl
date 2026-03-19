@@ -1,7 +1,7 @@
 name = "UnsafeAtomics"
 uuid = "013be700-e6cd-48c3-b4a1-df204f14c38f"
 authors = ["Takafumi Arakaki <aka.tkf@gmail.com> and contributors"]
-version = "0.3.0"
+version = "0.3.1"
 
 [weakdeps]
 LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
