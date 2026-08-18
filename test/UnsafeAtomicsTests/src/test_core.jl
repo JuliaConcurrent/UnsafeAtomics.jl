@@ -1,6 +1,6 @@
 module TestCore
 
-using UnsafeAtomics: UnsafeAtomics, monotonic, acquire, release, acq_rel, seq_cst, right
+using UnsafeAtomics: UnsafeAtomics, unordered, monotonic, acquire, release, acq_rel, seq_cst, right
 using UnsafeAtomics: none, singlethread
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
 using InteractiveUtils: code_llvm
@@ -149,6 +149,13 @@ function test_fence_is_emitted()
         ir = sprint(io -> code_llvm(io, f, Tuple{}; optimize = true, debuginfo = :none))
         @test occursin(r"^\s*fence "m, ir) || occursin("asm sideeffect", ir)
     end
+end
+
+function test_fence_weak_orderings()
+    # `fence` requires at least `acquire`. The intrinsic accepts `monotonic` and turns
+    # it into a no-op, but rejects `unordered`; preserve both behaviors in the fallback.
+    @test UnsafeAtomics.fence(monotonic, none) === nothing
+    @test_throws Base.ConcurrencyViolationError UnsafeAtomics.fence(unordered, none)
 end
 
 end  # module
