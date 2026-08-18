@@ -3,6 +3,7 @@ module TestCore
 using UnsafeAtomics: UnsafeAtomics, monotonic, acquire, release, acq_rel, seq_cst, right
 using UnsafeAtomics: none, singlethread
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
+using InteractiveUtils: code_llvm
 using Test
 
 using ..Bits
@@ -133,6 +134,21 @@ function test_explicit_syncscope()
     UnsafeAtomics.fence(release, singlethread)
     UnsafeAtomics.fence(acq_rel, none)
     UnsafeAtomics.fence(seq_cst, none)
+end
+
+barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
+barrier_release() = (UnsafeAtomics.fence(release); nothing)
+barrier_acq_rel() = (UnsafeAtomics.fence(acq_rel); nothing)
+barrier_seq_cst() = (UnsafeAtomics.fence(seq_cst); nothing)
+
+function test_fence_is_emitted()
+    # Exercise the public wrapper: a direct intrinsic call survives even on affected
+    # Julia versions, while a wrapper call can be deleted when its result is unused.
+    # `seq_cst` may lower to inline asm rather than an LLVM `fence` (see core.jl).
+    @testset for f in (barrier_acquire, barrier_release, barrier_acq_rel, barrier_seq_cst)
+        ir = sprint(io -> code_llvm(io, f, Tuple{}; optimize = true, debuginfo = :none))
+        @test occursin(r"^\s*fence "m, ir) || occursin("asm sideeffect", ir)
+    end
 end
 
 end  # module

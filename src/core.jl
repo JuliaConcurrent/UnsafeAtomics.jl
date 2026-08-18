@@ -250,18 +250,46 @@ for typ in (inttypes..., floattypes...)
     end
 end
 
+# Before Julia 1.12, inference models `Core.Intrinsics.atomic_fence` as effect-free.
+# This can delete a fence inlined through the public wrapper when its result is unused;
+# see JuliaLang/julia#57806. Extend the version check if the fix is backported.
+
 for sync in syncscopes
     if sync == none
-        # Core.Intrinsics.atomic_fence was introduced in 1.10
-        if VERSION < v"1.14.0-DEV.1371"
-            @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
-                Core.Intrinsics.atomic_fence(base_ordering(ord))
-                return nothing
+        if VERSION >= v"1.12"
+            # Core.Intrinsics.atomic_fence was introduced in 1.10
+            if VERSION < v"1.14.0-DEV.1371"
+                @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
+                    Core.Intrinsics.atomic_fence(base_ordering(ord))
+                    return nothing
+                end
+            else
+                @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
+                    Core.Intrinsics.atomic_fence(base_ordering(ord), :system)
+                    return nothing
+                end
             end
         else
-            @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
-                Core.Intrinsics.atomic_fence(base_ordering(ord), :system)
-                return nothing
+            # Inference treats `llvmcall` conservatively, so the fence is retained.
+            for ord in orderings
+                if ord === unordered || ord === monotonic
+                    # `fence` requires at least `acquire`; codegen turns the weaker
+                    # orderings into a no-op, so do the same here.
+                    @eval UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync))) = nothing
+                elseif ord === seq_cst && Sys.ARCH == :x86_64
+                    # defined by the x86_64 special case below
+                else
+                    @eval function UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync)))
+                        return llvmcall(
+                            $("""
+                            fence $ord
+                            ret void
+                            """),
+                            Cvoid,
+                            Tuple{},
+                        )
+                    end
+                end
             end
         end
         if Sys.ARCH == :x86_64
