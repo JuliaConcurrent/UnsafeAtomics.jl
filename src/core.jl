@@ -250,13 +250,23 @@ for typ in (inttypes..., floattypes...)
     end
 end
 
-# Before Julia 1.12, inference models `Core.Intrinsics.atomic_fence` as effect-free.
-# This can delete a fence inlined through the public wrapper when its result is unused;
-# see JuliaLang/julia#57806. Extend the version check if the fix is backported.
+# Before JuliaLang/julia#57806, inference modeled `Core.Intrinsics.atomic_fence` as
+# effect-free, so a fence inlined through the public wrapper could be deleted when its
+# result was unused. Probe the effect model directly instead of hard-coding versions, so
+# this relaxes by itself on any patch release that carries the backport. If the compiler
+# API is unavailable, retain the workaround.
+const FENCE_INTRINSIC_ELIDABLE =
+    VERSION < v"1.12" && try
+        Core.Compiler.is_effect_free(
+            Base.infer_effects(Core.Intrinsics.atomic_fence, Tuple{Symbol}),
+        )
+    catch
+        true
+    end
 
 for sync in syncscopes
     if sync == none
-        if VERSION >= v"1.12"
+        if !FENCE_INTRINSIC_ELIDABLE
             # Core.Intrinsics.atomic_fence was introduced in 1.10
             if VERSION < v"1.14.0-DEV.1371"
                 @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
@@ -272,10 +282,15 @@ for sync in syncscopes
         else
             # Inference treats `llvmcall` conservatively, so the fence is retained.
             for ord in orderings
-                if ord === unordered || ord === monotonic
-                    # `fence` requires at least `acquire`; codegen turns the weaker
-                    # orderings into a no-op, so do the same here.
+                if ord === monotonic
+                    # `fence` requires at least `acquire`; the intrinsic accepts
+                    # `:monotonic` and codegen turns it into a no-op.
                     @eval UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync))) = nothing
+                elseif ord === unordered
+                    # The intrinsic rejects `:unordered`; keep raising the identical
+                    # error. A call that always throws cannot be wrongly elided.
+                    @eval UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync))) =
+                        Core.Intrinsics.atomic_fence($(QuoteNode(base_ordering(ord))))
                 elseif ord === seq_cst && Sys.ARCH == :x86_64
                     # defined by the x86_64 special case below
                 else
