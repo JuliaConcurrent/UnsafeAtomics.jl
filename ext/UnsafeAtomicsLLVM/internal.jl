@@ -20,8 +20,11 @@ end
 mapop(op::OP) where {OP} = op
 mapop(::typeof(UnsafeAtomics.right)) = right
 
-@inline UnsafeAtomics.modify!(ptr::LLVMPtr, op::OP, x, order::Ordering, sync::UnsafeAtomics.Internal.SyncScope) where {OP} =
+@inline function UnsafeAtomics.modify!(ptr::LLVMPtr, op::OP, x, order::Ordering, sync::UnsafeAtomics.Internal.SyncScope) where {OP}
+    # atomicrmw can't be unordered
+    order === UnsafeAtomics.unordered && UnsafeAtomics.Internal.throw_invalid_ordering()
     atomic_pointermodify(ptr, mapop(op), x, Val{julia_ordering_name(order)}(), Val{julia_syncscope_name(sync)}())
+end
 
 @inline UnsafeAtomics.cas!(
     ptr::LLVMPtr,

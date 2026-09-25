@@ -181,6 +181,23 @@ function test_unsupported_arguments()
     end
 end
 
+function test_unordered_rmw()
+    # atomicrmw can't be unordered; this used to fail to parse the generated IR.
+    @testset for T in [Int32, Float64]
+        xs = T[1, 2]
+        ptr = pointer(xs, 1)
+        GC.@preserve xs begin
+            @test_throws ConcurrencyViolationError UnsafeAtomics.add!(ptr, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.xchg!(ptr, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.max!(ptr, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.modify!(ptr, *, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.add!(
+                ptr, T(1), unordered, singlethread)
+            @test xs == T[1, 2]
+        end
+    end
+end
+
 function test_failure_order()
     failure_order = UnsafeAtomics.Internal.failure_order
     @test failure_order(monotonic) === monotonic
