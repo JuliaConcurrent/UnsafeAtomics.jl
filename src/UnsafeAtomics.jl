@@ -18,21 +18,37 @@ function or! end
 function xor! end
 function max! end
 function min! end
+function fmax! end
+function fmin! end
+function inc_wrap! end
+function dec_wrap! end
+function sub_cond! end
+function sub_sat! end
 
 # =>
 right(_, x) = x
 
+function fmax end
+function fmin end
+function inc_wrap end
+function dec_wrap end
+function sub_cond end
+function sub_sat end
+
 module Internal
 
 using Base.Sys: WORD_SIZE
-using Base: bitcast, llvmcall
+using Base: llvmcall
+using Core: LLVMPtr
 
 using ..UnsafeAtomics: UnsafeAtomics, Ordering, SyncScope, right
 
 include("utils.jl")
 include("orderings.jl")
 include("syncscopes.jl")
+include("generator.jl")
 include("core.jl")
+include("docs.jl")
 
 end  # module Internal
 
@@ -55,14 +71,20 @@ const workgroup = Internal.workgroup
 const device = Internal.device
 const system = Internal.system
 
+const default_scope = Internal.default_scope
+const failure_order = Internal.failure_order
+
 Internal.declare_public(
     UnsafeAtomics,
     :Ordering, :SyncScope,
     :load, :store!, :cas!, :modify!, :fence,
-    :add!, :sub!, :xchg!, :and!, :nand!, :or!, :xor!, :max!, :min!, :right,
+    :add!, :sub!, :xchg!, :and!, :nand!, :or!, :xor!, :max!, :min!, :fmax!, :fmin!,
+    :inc_wrap!, :dec_wrap!, :sub_cond!, :sub_sat!,
+    :right, :fmax, :fmin, :inc_wrap, :dec_wrap, :sub_cond, :sub_sat,
     :unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cst,
     :acquire_release, :sequentially_consistent,
     :none, :singlethread, :subgroup, :workgroup, :device, :system,
+    :default_scope, :failure_order,
 )
 
 end  # baremodule UnsafeAtomics

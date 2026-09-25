@@ -1,40 +1,12 @@
-@inline UnsafeAtomics.load(x) = UnsafeAtomics.load(x, seq_cst)
-@inline UnsafeAtomics.store!(x, v) = UnsafeAtomics.store!(x, v, seq_cst)
-@inline UnsafeAtomics.cas!(x, cmp, new) = UnsafeAtomics.cas!(x, cmp, new, seq_cst, seq_cst)
-@inline UnsafeAtomics.modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, seq_cst)
-@inline UnsafeAtomics.fence() = UnsafeAtomics.fence(seq_cst)
-
-@inline UnsafeAtomics.load(x, ord) = UnsafeAtomics.load(x, ord, none)
-@inline UnsafeAtomics.store!(x, v, ord) = UnsafeAtomics.store!(x, v, ord, none)
-@inline UnsafeAtomics.cas!(x, cmp, new, ord) = UnsafeAtomics.cas!(x, cmp, new, ord, failure_order(ord), none)
-@inline UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_ord) = UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_ord, none)
-@inline UnsafeAtomics.modify!(ptr, op, x, ord) = UnsafeAtomics.modify!(ptr, op, x, ord, none)
-@inline UnsafeAtomics.fence(ord) = UnsafeAtomics.fence(ord, none)
-
 #! format: off
-# https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L23-L30
-if Sys.ARCH == :i686 || startswith(string(Sys.ARCH), "arm") ||
-   Sys.ARCH === :powerpc64le || Sys.ARCH === :ppc64le
-    const inttypes = (Int8, Int16, Int32, Int64,
-                      UInt8, UInt16, UInt32, UInt64)
-else
+if 16 in ATOMIC_SIZES
     const inttypes = (Int8, Int16, Int32, Int64, Int128,
                       UInt8, UInt16, UInt32, UInt64, UInt128)
+else
+    const inttypes = (Int8, Int16, Int32, Int64,
+                      UInt8, UInt16, UInt32, UInt64)
 end
 const floattypes = (Float16, Float32, Float64)
-
-# https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L331-L341
-const llvmtypes = IdDict{Any,String}(
-    Bool => "i8",  # julia represents bools with 8-bits for now. # TODO: is this okay?
-    Int8 => "i8", UInt8 => "i8",
-    Int16 => "i16", UInt16 => "i16",
-    Int32 => "i32", UInt32 => "i32",
-    Int64 => "i64", UInt64 => "i64",
-    Int128 => "i128", UInt128 => "i128",
-    Float16 => "half",
-    Float32 => "float",
-    Float64 => "double",
-)
 #! format: on
 
 const OP_RMW_TABLE = [
@@ -47,212 +19,62 @@ const OP_RMW_TABLE = [
     (⊻) => xor,
     max => :max,
     min => :min,
+    UnsafeAtomics.fmax => :fmax,
+    UnsafeAtomics.fmin => :fmin,
+    UnsafeAtomics.inc_wrap => :inc_wrap,
+    UnsafeAtomics.dec_wrap => :dec_wrap,
+    UnsafeAtomics.sub_cond => :sub_cond,
+    UnsafeAtomics.sub_sat => :sub_sat,
 ]
 
-for (op, rmwop) in OP_RMW_TABLE
-    fn = Symbol(rmwop, "!")
-    @eval @inline UnsafeAtomics.$fn(x, v) = UnsafeAtomics.$fn(x, v, seq_cst)
-    @eval @inline UnsafeAtomics.$fn(x, v, ord) = UnsafeAtomics.$fn(x, v, ord, none) 
-    @eval @inline UnsafeAtomics.$fn(ptr, x, ord, scope) =
-        first(UnsafeAtomics.modify!(ptr, $op, x, ord, scope))
-end
+const FMAX_DOC = """
+    UnsafeAtomics.fmax(x, y)
+    UnsafeAtomics.fmin(x, y)
 
-const ATOMIC_INTRINSICS = isdefined(Core.Intrinsics, :atomic_pointerref)
+The maximum and minimum of floating-point numbers as defined by IEEE 754 `maxNum` and
+`minNum`: unlike `max` and `min`, a NaN operand is ignored in favour of the other one.
+`modify!` and `fmax!`/`fmin!` use the `atomicrmw fmax`/`fmin` instructions for these, whose
+choice between zeros of opposite signs, and of NaN payloads, depends on the target and LLVM
+version.
+"""
+@doc FMAX_DOC UnsafeAtomics.fmax(x::T, y::T) where {T<:AbstractFloat} =
+    isnan(x) ? y : isnan(y) ? x : max(x, y)
+@doc FMAX_DOC UnsafeAtomics.fmin(x::T, y::T) where {T<:AbstractFloat} =
+    isnan(x) ? y : isnan(y) ? x : min(x, y)
 
-if VERSION >= v"1.12.0-DEV.161" && Int == Int64
-const MAX_ATOMIC_SIZE = 16
-const MAX_POINTERATOMIC_SIZE = 16
-else
-const MAX_ATOMIC_SIZE = 8
-const MAX_POINTERATOMIC_SIZE = 8
-end
+"""
+    UnsafeAtomics.inc_wrap(old, x)
 
+`old + 1`, wrapping around to zero past `x`: `old >= x ? 0 : old + 1`, for unsigned
+integers. `modify!` and `inc_wrap!` use `atomicrmw uinc_wrap` for it from LLVM 22 (Julia 1.14).
+"""
+UnsafeAtomics.inc_wrap(old::T, x::T) where {T<:Unsigned} = old >= x ? zero(T) : old + one(T)
 
-if VERSION < v"1.12.0"
-    ptr(typ) = typ*"*"
-    inttoptr(typ, arg) = "inttoptr i$WORD_SIZE $arg to $(ptr(typ))"
-else
-    ptr(typ) = "ptr"
-    inttoptr(_, arg) = "bitcast ptr $arg to ptr"
-end
+"""
+    UnsafeAtomics.dec_wrap(old, x)
 
-# The atomics that `Core.Intrinsics` can't express, as llvmcall. The IR contains the scope,
-# so it's generated from the scope's type parameter.
-@generated function llvm_load(x::Ptr{T}, ::LLVMOrdering{ord}, ::LLVMSyncScope{sync}) where {T,ord,sync}
-    lt = llvmtypes[T]
-    ir = """
-        %ptr = $(inttoptr(lt, "%0"))
-        %rv = load atomic $lt, $(ptr(lt)) %ptr $(LLVMSyncScope{sync}()) $ord, align $(sizeof(T))
-        ret $lt %rv
-        """
-    return :(llvmcall($ir, $T, Tuple{Ptr{$T}}, x))
-end
+`old - 1`, wrapping around to `x` at zero or above `x`: `(old == 0 || old > x) ? x : old - 1`,
+for unsigned integers. `modify!` and `dec_wrap!` use `atomicrmw udec_wrap` for it from LLVM 22
+(Julia 1.14).
+"""
+UnsafeAtomics.dec_wrap(old::T, x::T) where {T<:Unsigned} =
+    (iszero(old) || old > x) ? x : old - one(T)
 
-@generated function llvm_store!(x::Ptr{T}, v::T, ::LLVMOrdering{ord}, ::LLVMSyncScope{sync}) where {T,ord,sync}
-    lt = llvmtypes[T]
-    ir = """
-        %ptr = $(inttoptr(lt, "%0"))
-        store atomic $lt %1, $(ptr(lt)) %ptr $(LLVMSyncScope{sync}()) $ord, align $(sizeof(T))
-        ret void
-        """
-    return :(llvmcall($ir, Cvoid, Tuple{Ptr{$T},$T}, x, v))
-end
+"""
+    UnsafeAtomics.sub_cond(old, x)
 
-@generated function llvm_cas!(
-    x::Ptr{T},
-    cmp::T,
-    new::T,
-    ::LLVMOrdering{success_ordering},
-    ::LLVMOrdering{failure_ordering},
-    ::LLVMSyncScope{sync},
-) where {T,success_ordering,failure_ordering,sync}
-    lt = llvmtypes[T]
-    ir = """
-        %ptr = $(inttoptr(lt, "%0"))
-        %rs = cmpxchg $(ptr(lt)) %ptr, $lt %1, $lt %2 $(LLVMSyncScope{sync}()) $success_ordering $failure_ordering
-        %rv = extractvalue { $lt, i1 } %rs, 0
-        %s1 = extractvalue { $lt, i1 } %rs, 1
-        %s8 = zext i1 %s1 to i8
-        %sptr = $(inttoptr("i8", "%3"))
-        store i8 %s8, $(ptr("i8")) %sptr
-        ret $lt %rv
-        """
-    return quote
-        success = Ref{Int8}()
-        GC.@preserve success begin
-            old = llvmcall(
-                $ir,
-                $T,
-                Tuple{Ptr{$T},$T,$T,Ptr{Int8}},
-                x,
-                cmp,
-                new,
-                Ptr{Int8}(pointer_from_objref(success)),
-            )
-        end
-        return (old = old, success = !iszero(success[]))
-    end
-end
+`old - x` if that doesn't wrap around, `old` otherwise, for unsigned integers. `modify!` and
+`sub_cond!` use `atomicrmw usub_cond` for it from LLVM 22 (Julia 1.14).
+"""
+UnsafeAtomics.sub_cond(old::T, x::T) where {T<:Unsigned} = old >= x ? old - x : old
 
-@generated function llvm_rmw!(
-    x::Ptr{T},
-    ::Val{rmw},
-    v::T,
-    ::LLVMOrdering{ord},
-    ::LLVMSyncScope{sync},
-) where {T,rmw,ord,sync}
-    lt = llvmtypes[T]
-    ir = """
-        %ptr = $(inttoptr(lt, "%0"))
-        %rv = atomicrmw $rmw $(ptr(lt)) %ptr, $lt %1 $(LLVMSyncScope{sync}()) $ord
-        ret $lt %rv
-        """
-    return :(llvmcall($ir, $T, Tuple{Ptr{$T},$T}, x, v))
-end
+"""
+    UnsafeAtomics.sub_sat(old, x)
 
-# Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
-for typ in (inttypes..., floattypes...)
-    for ord in orderings
-        ord in (release, acq_rel) && continue
-
-        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
-            @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)), ::typeof(none))
-                return Core.Intrinsics.atomic_pointerref(x, base_ordering($ord))
-            end
-        end
-        @eval UnsafeAtomics.load(x::Ptr{$typ}, ord::$(typeof(ord)), sync::LLVMSyncScope) =
-            llvm_load(x, ord, sync)
-    end
-
-    for ord in orderings
-        ord in (acquire, acq_rel) && continue
-
-        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
-            @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)), ::typeof(none))
-                Core.Intrinsics.atomic_pointerset(x, v, base_ordering($ord))
-                return nothing
-            end
-        end
-        @eval UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ord::$(typeof(ord)), sync::LLVMSyncScope) =
-            llvm_store!(x, v, ord, sync)
-    end
-
-    for success_ordering in (monotonic, acquire, release, acq_rel, seq_cst),
-        failure_ordering in (monotonic, acquire, seq_cst)
-
-        typ <: AbstractFloat && break
-
-        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
-            @eval function UnsafeAtomics.cas!(
-                x::Ptr{$typ},
-                cmp::$typ,
-                new::$typ,
-                ::$(typeof(success_ordering)),
-                ::$(typeof(failure_ordering)),
-                ::typeof(none),
-            )
-                return Core.Intrinsics.atomic_pointerreplace(
-                    x,
-                    cmp,
-                    new,
-                    base_ordering($success_ordering),
-                    base_ordering($failure_ordering)
-                )
-            end
-        end
-        @eval UnsafeAtomics.cas!(
-            x::Ptr{$typ},
-            cmp::$typ,
-            new::$typ,
-            success_ordering::$(typeof(success_ordering)),
-            failure_ordering::$(typeof(failure_ordering)),
-            sync::LLVMSyncScope,
-        ) = llvm_cas!(x, cmp, new, success_ordering, failure_ordering, sync)
-    end
-
-    for (op, rmwop) in OP_RMW_TABLE
-        rmw = string(rmwop)
-        fn = Symbol(rmw, "!")
-        if (rmw == "max" || rmw == "min") && typ <: Unsigned
-            # LLVM distinguishes signedness in the operation, not the integer type.
-            rmw = "u" * rmw
-        end
-        if typ <: AbstractFloat
-            if rmw == "add"
-                rmw = "fadd"
-            elseif rmw == "sub"
-                rmw = "fsub"
-            else
-                continue
-            end
-        end
-        for ord in orderings
-            ord === unordered && continue  # atomicrmw can't be unordered
-            # Enable this code iff https://github.com/JuliaLang/julia/pull/45122 get's merged
-            if false && ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
-                @eval function UnsafeAtomics.modify!(
-                        x::Ptr{$typ},
-                        op::typeof($op),
-                        v::$typ,
-                        ::$(typeof(ord)),
-                        ::typeof(none),
-                    )
-                        return Core.Intrinsics.atomic_pointermodify(x, op, v, base_ordering($ord))
-                end
-            end
-            @eval function UnsafeAtomics.modify!(
-                x::Ptr{$typ},
-                ::typeof($op),
-                v::$typ,
-                ord::$(typeof(ord)),
-                sync::LLVMSyncScope,
-            )
-                old = llvm_rmw!(x, $(Val(Symbol(rmw))), v, ord, sync)
-                return old => $op(old, v)
-            end
-        end
-    end
-end
+`old - x`, saturating at zero, for unsigned integers. `modify!` and `sub_sat!` use
+`atomicrmw usub_sat` for it from LLVM 22 (Julia 1.14).
+"""
+UnsafeAtomics.sub_sat(old::T, x::T) where {T<:Unsigned} = old >= x ? old - x : zero(T)
 
 # Before JuliaLang/julia#57806, inference modeled `Core.Intrinsics.atomic_fence` as
 # effect-free, so a fence inlined through the public wrapper could be deleted when its
@@ -267,9 +89,6 @@ const FENCE_INTRINSIC_ELIDABLE =
     catch
         true
     end
-
-@noinline throw_invalid_ordering() =
-    throw(Base.ConcurrencyViolationError("invalid atomic ordering"))
 
 # Before LLVM 20, a seq_cst fence on x86_64 lowers to `mfence`, which is slow on AMD CPUs.
 # Emit a locked `or` instead, like LLVM does since llvm/llvm-project#106555.
@@ -297,12 +116,12 @@ end
 if !FENCE_INTRINSIC_ELIDABLE
     # Core.Intrinsics.atomic_fence was introduced in 1.10
     if VERSION < v"1.14.0-DEV.1371"
-        function UnsafeAtomics.fence(ord::Ordering, ::typeof(none))
+        function system_fence(ord::Ordering)
             Core.Intrinsics.atomic_fence(base_ordering(ord))
             return nothing
         end
     else
-        function UnsafeAtomics.fence(ord::Ordering, ::typeof(none))
+        function system_fence(ord::Ordering)
             Core.Intrinsics.atomic_fence(base_ordering(ord), :system)
             return nothing
         end
@@ -313,13 +132,13 @@ else
         if ord === monotonic
             # `fence` requires at least `acquire`; the intrinsic accepts
             # `:monotonic` and codegen turns it into a no-op.
-            @eval UnsafeAtomics.fence(::$(typeof(ord)), ::typeof(none)) = nothing
+            @eval system_fence(::$(typeof(ord))) = nothing
         elseif ord === unordered
             # defined below
         elseif ord === seq_cst && X86_FENCE_WORKAROUND
             # defined by the x86_64 special case below
         else
-            @eval function UnsafeAtomics.fence(::$(typeof(ord)), ::typeof(none))
+            @eval function system_fence(::$(typeof(ord)))
                 return llvmcall(
                     $("""
                     fence $ord
@@ -335,108 +154,83 @@ end
 # A fence can't be unordered. Throw the intrinsic's error ourselves: Julia's inference thinks
 # the intrinsic throws another type of exception, which Julia 1.11 miscompiles when the error
 # is caught. A call that always throws can't be elided.
-UnsafeAtomics.fence(::typeof(unordered), ::typeof(none)) = throw_invalid_ordering()
+system_fence(::typeof(unordered)) = throw_invalid_ordering()
 if X86_FENCE_WORKAROUND
-    UnsafeAtomics.fence(::typeof(seq_cst), ::typeof(none)) = cpu_seq_cst_fence()
+    system_fence(::typeof(seq_cst)) = cpu_seq_cst_fence()
 end
 
-# Fences in other scopes. Like for the system scope, `monotonic` is a no-op and `unordered`
-# is invalid, as `fence` requires at least `acquire`.
-UnsafeAtomics.fence(ord::Ordering, sync::LLVMSyncScope) = llvm_fence(ord, sync)
+@inline UnsafeAtomics.fence(order = seq_cst, scope = system) =
+    with_ordering_and_scope(fence_in, order, scope)
+@inline fence_in(::Val{o}, ::Val{:system}) where {o} = system_fence(LLVMOrdering{o}())
+# Other scopes. Like for the system scope, `monotonic` is a no-op and `unordered` is invalid,
+# as `fence` requires at least `acquire`.
+@inline fence_in(o::Val, s::Val) = llvm_fence(o, s, Val(()))
 
-@generated function llvm_fence(::LLVMOrdering{ord}, ::LLVMSyncScope{sync}) where {ord,sync}
-    ord === :monotonic && return :(nothing)
-    ord === :unordered && return :(throw_invalid_ordering())
-    ir = """
-        fence $(LLVMSyncScope{sync}()) $ord
-        ret void
-        """
-    return :(llvmcall($ir, Cvoid, Tuple{}))
-end
+# Pointers. The generator emits one instruction for each, or uses the intrinsics for Ptr in
+# the system scope. Orderings and scopes are selected by value: see `with_ordering`.
 
-as_native_uint(::Type{T}) where {T} =
-    if sizeof(T) == 1
-        UInt8
-    elseif sizeof(T) == 2
-        UInt16
-    elseif sizeof(T) == 4
-        UInt32
-    elseif sizeof(T) == 8
-        UInt64
-    elseif sizeof(T) == 16
-        UInt128
-    else
-        error(LazyString("unsupported size: ", sizeof(T)))
+@inline UnsafeAtomics.load(
+    ptr::AnyPtr{T},
+    order = seq_cst,
+    scope = default_scope(ptr);
+    volatile::Bool = false,
+    align::Integer = sizeof(T),
+) where {T} =
+    with_ordering_and_scope(order, scope, flag(volatile), Val(align)) do o, s, v, al
+        llvm_load(ptr, o, s, v, al, Val(()))
     end
 
-const LOAD_ORDERINGS = (unordered, monotonic, acquire, seq_cst)
-const STORE_ORDERINGS = (unordered, monotonic, release, seq_cst)
-const RMW_ORDERINGS = (monotonic, acquire, release, acq_rel, seq_cst)
-const CAS_SUCCESS_ORDERINGS = (monotonic, acquire, release, acq_rel, seq_cst)
-const CAS_FAILURE_ORDERINGS = (monotonic, acquire, seq_cst)
-
-# The fallbacks below retry with a same-sized unsigned integer. If `T` already is that
-# integer, no specialized method matched: report why, instead of recursing forever.
-@noinline function throw_unsupported(::Type{T}, syncscope, valid_ordering::Bool) where {T}
-    valid_ordering || throw_invalid_ordering()
-    syncscope isa LLVMSyncScope ||
-        throw(ArgumentError(string("unsupported syncscope: ", repr(syncscope))))
-    throw(ArgumentError(string("unsupported atomic type: ", T)))
-end
-
-function UnsafeAtomics.load(x::Ptr{T}, ordering, syncscope) where {T}
-    UI = as_native_uint(T)
-    UI === T && throw_unsupported(T, syncscope, ordering in LOAD_ORDERINGS)
-    v = UnsafeAtomics.load(Ptr{UI}(x), ordering, syncscope)
-    return bitcast(T, v)
-end
-
-function UnsafeAtomics.store!(x::Ptr{T}, v::T, ordering, syncscope) where {T}
-    UI = as_native_uint(T)
-    UI === T && throw_unsupported(T, syncscope, ordering in STORE_ORDERINGS)
-    UnsafeAtomics.store!(Ptr{UI}(x), bitcast(UI, v), ordering, syncscope)::Nothing
-end
-
-function UnsafeAtomics.modify!(x::Ptr{T}, ::typeof(right), v::T, ordering, syncscope) where {T}
-    UI = as_native_uint(T)
-    UI === T && throw_unsupported(T, syncscope, ordering in RMW_ORDERINGS)
-    old, _ = UnsafeAtomics.modify!(Ptr{UI}(x), right, bitcast(UI, v), ordering, syncscope)
-    return bitcast(T, old) => v
-end
-
-# Operations without an atomicrmw instruction for `T` (e.g. `max` on floats, or any other
-# function) retry a cmpxchg until no other thread modified the value in between.
-@inline function UnsafeAtomics.modify!(x::Ptr{T}, op::OP, v::T, ordering, syncscope) where {T,OP}
-    ordering in RMW_ORDERINGS || throw_invalid_ordering()
-    old = UnsafeAtomics.load(x, monotonic, syncscope)
-    while true
-        new = op(old, v)
-        (old, success) = UnsafeAtomics.cas!(x, old, new, ordering, monotonic, syncscope)
-        success && return old => new
+@inline UnsafeAtomics.store!(
+    ptr::AnyPtr{T},
+    x::T,
+    order = seq_cst,
+    scope = default_scope(ptr);
+    volatile::Bool = false,
+    align::Integer = sizeof(T),
+) where {T} =
+    with_ordering_and_scope(order, scope, flag(volatile), Val(align)) do o, s, v, al
+        llvm_store!(ptr, x, o, s, v, al, Val(()))
     end
-end
 
-function UnsafeAtomics.cas!(
-    x::Ptr{T},
+@inline UnsafeAtomics.cas!(
+    ptr::AnyPtr{T},
     cmp::T,
     new::T,
-    success_ordering,
-    failure_ordering,
-    syncscope,
-) where {T}
-    UI = as_native_uint(T)
-    UI === T && throw_unsupported(
-        T,
-        syncscope,
-        success_ordering in CAS_SUCCESS_ORDERINGS && failure_ordering in CAS_FAILURE_ORDERINGS,
-    )
-    (old, success) = UnsafeAtomics.cas!(
-        Ptr{UI}(x),
-        bitcast(UI, cmp),
-        bitcast(UI, new),
-        success_ordering,
-        failure_ordering,
-        syncscope
-    )
-    return (old = bitcast(T, old), success = success)
+    success = seq_cst,
+    failure = failure_order(success),
+    scope = default_scope(ptr);
+    weak::Bool = false,
+    volatile::Bool = false,
+    align::Integer = sizeof(T),
+) where {T} =
+    with_orderings_and_scope(success, failure, scope, flag(weak), flag(volatile), Val(align)) do so, fo, s, w, v, al
+        llvm_cmpxchg!(ptr, cmp, new, so, fo, s, w, v, al, Val(()))
+    end
+
+@inline UnsafeAtomics.modify!(
+    ptr::AnyPtr{T},
+    op::OP,
+    x::T,
+    order = seq_cst,
+    scope = default_scope(ptr);
+    volatile::Bool = false,
+    align::Integer = sizeof(T),
+) where {T,OP} =
+    with_ordering_and_scope(order, scope, flag(volatile), Val(align)) do o, s, v, al
+        llvm_modify!(ptr, op, x, o, s, v, al, Val(()))
+    end
+
+for (op, rmwop) in OP_RMW_TABLE
+    fn = Symbol(rmwop, "!")
+    @eval @inline UnsafeAtomics.$fn(
+        ptr::AnyPtr{T},
+        x::T,
+        order = seq_cst,
+        scope = default_scope(ptr);
+        volatile::Bool = false,
+        align::Integer = sizeof(T),
+    ) where {T} =
+        with_ordering_and_scope(order, scope, flag(volatile), Val(align)) do o, s, v, al
+            llvm_fetch_modify!(ptr, $op, x, o, s, v, al, Val(()))
+        end
 end
