@@ -48,6 +48,7 @@ include("orderings.jl")
 include("syncscopes.jl")
 include("generator.jl")
 include("core.jl")
+include("docs.jl")
 
 end  # module Internal
 
