@@ -133,7 +133,7 @@ function check_access(::Type{T}, align, volatile, weak = false) where {T}
     weak isa Bool || invalid("weak must be a Bool, got ", repr(weak))
     is_zero_size(T) && return
     llvm_type(T) === nothing && invalid("unsupported atomic type ", T)
-    align isa Integer && ispow2(align) && align >= sizeof(T) ||
+    align isa Integer && !(align isa Bool) && ispow2(align) && align >= sizeof(T) ||
         invalid("invalid alignment ", repr(align), " for an atomic ", T,
                 ": expected a power of two, at least ", sizeof(T))
     return

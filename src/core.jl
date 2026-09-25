@@ -131,13 +131,26 @@ end
 @inline fence_in(o::Val, s::Val) = llvm_fence(o, s, Val(()))
 
 # Pointers. The generator emits one instruction for each, or uses the intrinsics for Ptr in
-# the system scope. Orderings and scopes have to be constants: see `ordering_val`.
+# the system scope. Orderings, scopes and flags have to be constants: see `ordering_val`.
 
-@inline UnsafeAtomics.load(ptr::AnyPtr{T}, order = seq_cst, scope = system) where {T} =
-    llvm_load(ptr, ordering_val(order), scope_val(scope), Val(false), Val(sizeof(T)), Val(()))
+@inline UnsafeAtomics.load(
+    ptr::AnyPtr{T},
+    order = seq_cst,
+    scope = system;
+    volatile::Bool = false,
+    align::Integer = sizeof(T),
+) where {T} =
+    llvm_load(ptr, ordering_val(order), scope_val(scope), Val(volatile), Val(align), Val(()))
 
-@inline UnsafeAtomics.store!(ptr::AnyPtr{T}, x::T, order = seq_cst, scope = system) where {T} =
-    llvm_store!(ptr, x, ordering_val(order), scope_val(scope), Val(false), Val(sizeof(T)),
+@inline UnsafeAtomics.store!(
+    ptr::AnyPtr{T},
+    x::T,
+    order = seq_cst,
+    scope = system;
+    volatile::Bool = false,
+    align::Integer = sizeof(T),
+) where {T} =
+    llvm_store!(ptr, x, ordering_val(order), scope_val(scope), Val(volatile), Val(align),
                 Val(()))
 
 @inline UnsafeAtomics.cas!(
@@ -146,18 +159,36 @@ end
     new::T,
     success = seq_cst,
     failure = failure_order(success),
-    scope = system,
+    scope = system;
+    weak::Bool = false,
+    volatile::Bool = false,
+    align::Integer = sizeof(T),
 ) where {T} =
     llvm_cmpxchg!(ptr, cmp, new, ordering_val(success), ordering_val(failure), scope_val(scope),
-                  Val(false), Val(false), Val(sizeof(T)), Val(()))
+                  Val(weak), Val(volatile), Val(align), Val(()))
 
-@inline UnsafeAtomics.modify!(ptr::AnyPtr{T}, op::OP, x::T, order = seq_cst, scope = system) where {T,OP} =
-    llvm_modify!(ptr, op, x, ordering_val(order), scope_val(scope), Val(false), Val(sizeof(T)),
+@inline UnsafeAtomics.modify!(
+    ptr::AnyPtr{T},
+    op::OP,
+    x::T,
+    order = seq_cst,
+    scope = system;
+    volatile::Bool = false,
+    align::Integer = sizeof(T),
+) where {T,OP} =
+    llvm_modify!(ptr, op, x, ordering_val(order), scope_val(scope), Val(volatile), Val(align),
                  Val(()))
 
 for (op, rmwop) in OP_RMW_TABLE
     fn = Symbol(rmwop, "!")
-    @eval @inline UnsafeAtomics.$fn(ptr::AnyPtr{T}, x::T, order = seq_cst, scope = system) where {T} =
-        llvm_fetch_modify!(ptr, $op, x, ordering_val(order), scope_val(scope), Val(false),
-                           Val(sizeof(T)), Val(()))
+    @eval @inline UnsafeAtomics.$fn(
+        ptr::AnyPtr{T},
+        x::T,
+        order = seq_cst,
+        scope = system;
+        volatile::Bool = false,
+        align::Integer = sizeof(T),
+    ) where {T} =
+        llvm_fetch_modify!(ptr, $op, x, ordering_val(order), scope_val(scope), Val(volatile),
+                           Val(align), Val(()))
 end

@@ -15,7 +15,10 @@ modify_symbols(p, x) = UnsafeAtomics.modify!(p, +, x, :seq_cst, :subgroup)
 load_symbols(p) = UnsafeAtomics.load(p, :sequentially_consistent, :singlethread)
 store_symbols(p, x) = UnsafeAtomics.store!(p, x, :release, :system)
 cas_symbols(p, c, n) = UnsafeAtomics.cas!(p, c, n, :acq_rel, :acquire, :device)
-cas_default_failure(p, c, n) = UnsafeAtomics.cas!(p, c, n, :acq_rel)
+cas_acq_rel(p, c, n) = UnsafeAtomics.cas!(p, c, n, :acq_rel)
+cas_acquire_release(p, c, n) = UnsafeAtomics.cas!(p, c, n, :acquire_release)
+cas_release(p, c, n) = UnsafeAtomics.cas!(p, c, n, :release)
+cas_seq_cst(p, c, n) = UnsafeAtomics.cas!(p, c, n, :sequentially_consistent)
 fence_symbols() = UnsafeAtomics.fence(:acquire_release, :workgroup)
 
 const P = LLVMPtr{Int32,1}
@@ -47,8 +50,11 @@ function test_constant_orderings()
     check(cas_symbols, Tuple{P,Int32,Int32}, "cmpxchg", "syncscope(\"device\") acq_rel acquire, align 4",
           @NamedTuple{old::Int32, success::Bool})
     # the failure ordering is derived from a Symbol too
-    check(cas_default_failure, Tuple{P,Int32,Int32}, "cmpxchg", " acq_rel acquire, align 4",
-          @NamedTuple{old::Int32, success::Bool})
+    for (f, orders) in ((cas_acq_rel, "acq_rel acquire"), (cas_acquire_release, "acq_rel acquire"),
+                        (cas_release, "release monotonic"), (cas_seq_cst, "seq_cst seq_cst"))
+        check(f, Tuple{P,Int32,Int32}, "cmpxchg", " $orders, align 4",
+              @NamedTuple{old::Int32, success::Bool})
+    end
     check(fence_symbols, Tuple{}, r"^\s*fence ", "fence syncscope(\"workgroup\") acq_rel", Nothing)
 end
 
@@ -76,6 +82,47 @@ function test_invalid_constants()
     end
 end
 
+kw_load(p) = UnsafeAtomics.load(p, acquire, device; volatile = true, align = 16)
+kw_store(p, x) = UnsafeAtomics.store!(p, x, release, device; volatile = true)
+kw_cas(p, c, n) = UnsafeAtomics.cas!(p, c, n, acq_rel, acquire, device; weak = true, align = 8)
+kw_modify(p, x) = UnsafeAtomics.modify!(p, +, x, monotonic, device; volatile = true, align = 8)
+kw_add(p, x) = UnsafeAtomics.add!(p, x; volatile = true)
+kw_max_cas(p, x) = UnsafeAtomics.modify!(p, *, x, monotonic, device; volatile = true, align = 8)
+# Constant keywords only reach a wrapper that Julia inlines.
+@inline kw_inlined(p; kwargs...) = UnsafeAtomics.load(p, acquire, device; kwargs...)
+kw_forward_inlined(p) = kw_inlined(p; volatile = true, align = 8)
+
+function test_keywords()
+    function instruction(f, types)
+        ir = llvm_ir(f, types)
+        @test !occursin(r"apply_generic|jl_invoke|jl_f_", ir)
+        return [strip(l) for l in split(ir, '\n') if occursin(r"atomic|cmpxchg", l) && !occursin("tag_addr", l)]
+    end
+    @test endswith(only(instruction(kw_load, Tuple{P})), "syncscope(\"device\") acquire, align 16")
+    @test occursin("load atomic volatile", only(instruction(kw_load, Tuple{P})))
+    @test occursin("store atomic volatile", only(instruction(kw_store, Tuple{P,Int32})))
+    cas = only(instruction(kw_cas, Tuple{P,Int32,Int32}))
+    @test occursin("cmpxchg weak", cas) && endswith(cas, "acq_rel acquire, align 8")
+    @test occursin(r"atomicrmw volatile add .* align 8$", only(instruction(kw_modify, Tuple{P,Int32})))
+    @test occursin(r"atomicrmw volatile add .* seq_cst, align 4$", only(instruction(kw_add, Tuple{P,Int32})))
+    # the compare-and-swap loop passes them on
+    loop = instruction(kw_max_cas, Tuple{P,Int32})
+    @test length(loop) >= 2
+    @test all(l -> occursin("volatile", l) && endswith(l, "align 8"), loop)
+    @test endswith(only(instruction(kw_forward_inlined, Tuple{P})), "acquire, align 8")
+
+    xs = Int64[1, 2]
+    GC.@preserve xs begin
+        ptr = pointer(xs)
+        @test UnsafeAtomics.load(ptr; volatile = true, align = 16) == 1
+        @test UnsafeAtomics.cas!(ptr, 1, 3; weak = false) === (old = 1, success = true)
+        @test_throws ArgumentError UnsafeAtomics.load(ptr; align = 4)
+        @test_throws ArgumentError UnsafeAtomics.load(ptr; align = 12)
+        @test_throws ArgumentError UnsafeAtomics.store!(ptr, 1; align = 0)
+        @test_throws ArgumentError UnsafeAtomics.load(ptr; align = true)
+    end
+end
+
 # Values that are only known at run time are a dynamic call, like for Julia's intrinsics:
 # slow, but correct on the CPU.
 pick_order(i) = i == 1 ? monotonic : i == 2 ? acquire : i == 3 ? seq_cst : i == 4 ? acq_rel : release
@@ -91,6 +138,7 @@ function test_runtime_values()
         end
         for i in 1:5
             @test UnsafeAtomics.load(ptr, monotonic, pick_scope(i)) == 10
+            @test UnsafeAtomics.load(ptr; volatile = isodd(i)) == 10
         end
         @test UnsafeAtomics.cas!(ptr, Int32(10), Int32(12), pick_order(4), pick_order(2)) ===
               (old = Int32(10), success = true)
