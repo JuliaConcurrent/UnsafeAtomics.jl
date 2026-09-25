@@ -354,6 +354,62 @@ UnsafeAtomics.fence(ord::Ordering, sync::LLVMSyncScope) = llvm_fence(ord, sync)
     return :(llvmcall($ir, Cvoid, Tuple{}))
 end
 
+# LLVMPtr
+
+@inline UnsafeAtomics.load(ptr::LLVMPtr{T}, order::Ordering, scope::LLVMSyncScope) where {T} =
+    llvm_load(ptr, Val(llvm_ordering(order)), Val(scope_name(scope)), Val(false),
+              Val(sizeof(T)), Val(()))
+
+@inline function UnsafeAtomics.store!(
+    ptr::LLVMPtr{T},
+    x::T,
+    order::Ordering,
+    scope::LLVMSyncScope,
+) where {T}
+    llvm_store!(ptr, x, Val(llvm_ordering(order)), Val(scope_name(scope)), Val(false),
+                Val(sizeof(T)), Val(()))
+end
+
+@inline UnsafeAtomics.cas!(
+    ptr::LLVMPtr{T},
+    cmp::T,
+    new::T,
+    success_ordering::Ordering,
+    failure_ordering::Ordering,
+    scope::LLVMSyncScope,
+) where {T} = llvm_cmpxchg!(
+    ptr,
+    cmp,
+    new,
+    Val(llvm_ordering(success_ordering)),
+    Val(llvm_ordering(failure_ordering)),
+    Val(scope_name(scope)),
+    Val(false),
+    Val(false),
+    Val(sizeof(T)),
+    Val(()),
+)
+
+@inline UnsafeAtomics.modify!(
+    ptr::LLVMPtr{T},
+    op::OP,
+    x::T,
+    order::Ordering,
+    scope::LLVMSyncScope,
+) where {T,OP} = llvm_modify!(ptr, op, x, Val(llvm_ordering(order)), Val(scope_name(scope)),
+                              Val(false), Val(sizeof(T)), Val(()))
+
+for (op, rmwop) in OP_RMW_TABLE
+    fn = Symbol(rmwop, "!")
+    @eval @inline UnsafeAtomics.$fn(
+        ptr::LLVMPtr{T},
+        x::T,
+        order::Ordering,
+        scope::LLVMSyncScope,
+    ) where {T} = llvm_fetch_modify!(ptr, $op, x, Val(llvm_ordering(order)),
+                                     Val(scope_name(scope)), Val(false), Val(sizeof(T)), Val(()))
+end
+
 as_native_uint(::Type{T}) where {T} =
     if sizeof(T) == 1
         UInt8

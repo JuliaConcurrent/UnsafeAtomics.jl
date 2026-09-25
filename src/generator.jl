@@ -275,3 +275,69 @@ end
     ::Val{weak}, ::Val{volatile}, ::Val{align}, ::Val{md},
 ) where {T,success_order,failure_order,scope,weak,volatile,align,md} =
     generate(cmpxchg_ir, ptr, T, success_order, failure_order, scope, weak, volatile, align, md)
+
+# Read-modify-write with any function: an `atomicrmw` where one implements `op` on values of
+# type `T`, and a compare-and-swap loop otherwise.
+function native_rmw(@nospecialize(op), @nospecialize(T))
+    is_zero_size(T) && return op === right ? :xchg : nothing
+    llvm_type(T) === nothing && return nothing
+    int = T <: Base.BitInteger
+    # before LLVM 20, the AArch64 back-end can't compile floating-point atomicrmw on bfloat
+    float = is_ieee_float(T) &&
+            !(HAS_BFLOAT16 && T === Core.BFloat16 && Base.libllvm_version < v"20")
+    bool = T === Bool
+    if op === right
+        return :xchg
+    elseif op === (+)
+        return int ? :add : float ? :fadd : nothing
+    elseif op === (-)
+        return int ? :sub : float ? :fsub : nothing
+    elseif op === (&)
+        return int || bool ? :and : nothing
+    elseif op === (|)
+        return int || bool ? :or : nothing
+    elseif op === xor
+        return int || bool ? :xor : nothing
+    elseif op === (⊼)
+        # a bitwise nand of Bools isn't a Bool
+        return int ? :nand : nothing
+    elseif op === max
+        return T <: Base.BitSigned ? :max : T <: Base.BitUnsigned || bool ? :umax :
+               float ? :fmax : nothing
+    elseif op === min
+        return T <: Base.BitSigned ? :min : T <: Base.BitUnsigned || bool ? :umin :
+               float ? :fmin : nothing
+    end
+    return nothing
+end
+
+@inline function cas_loop!(ptr::AnyPtr{T}, op, x, order, scope, volatile, align, md) where {T}
+    old = llvm_load(ptr, Val(:monotonic), scope, volatile, align, md)
+    while true
+        new = op(old, x)::T
+        (; old, success) = llvm_cmpxchg!(
+            ptr, old, new, order, Val(:monotonic), scope, Val(true), volatile, align, md)
+        success && return old => new
+    end
+end
+
+function modify_ir(T, op, order, fetch)
+    check_order(order, RMW_ORDERS)
+    rmw = Base.issingletontype(op) ? native_rmw(op.instance, T) : nothing
+    if rmw === nothing
+        loop = :(cas_loop!(ptr, op, x, order, scope, volatile, align, md))
+        return fetch ? :(first($loop)) : loop
+    end
+    rmw = :(llvm_rmw!(ptr, Val($(QuoteNode(rmw))), x, order, scope, volatile, align, md))
+    return fetch ? rmw : :(old = $rmw; old => op(old, x))
+end
+
+# `old => op(old, x)`, where `op(old, x)` is computed in Julia for an `atomicrmw`
+@generated llvm_modify!(
+    ptr::AnyPtr{T}, op, x::T, order::Val{o}, scope::Val, volatile::Val, align::Val, md::Val,
+) where {T,o} = generate(modify_ir, T, op, o, false)
+
+# only `old`, without computing `op(old, x)` for an `atomicrmw`
+@generated llvm_fetch_modify!(
+    ptr::AnyPtr{T}, op, x::T, order::Val{o}, scope::Val, volatile::Val, align::Val, md::Val,
+) where {T,o} = generate(modify_ir, T, op, o, true)
