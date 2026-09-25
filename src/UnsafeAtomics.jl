@@ -30,7 +30,7 @@ function fmin end
 module Internal
 
 using Base.Sys: WORD_SIZE
-using Base: bitcast, llvmcall
+using Base: llvmcall
 using Core: LLVMPtr
 
 using ..UnsafeAtomics: UnsafeAtomics, Ordering, SyncScope, right
