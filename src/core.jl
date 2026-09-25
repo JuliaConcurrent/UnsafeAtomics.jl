@@ -211,6 +211,7 @@ for typ in (inttypes..., floattypes...)
             end
         end
         for ord in orderings
+            ord === unordered && continue  # atomicrmw can't be unordered
             for sync in syncscopes
                 # Enable this code iff https://github.com/JuliaLang/julia/pull/45122 get's merged
                 if false && ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
@@ -361,7 +362,7 @@ as_native_uint(::Type{T}) where {T} =
 
 const LOAD_ORDERINGS = (unordered, monotonic, acquire, seq_cst)
 const STORE_ORDERINGS = (unordered, monotonic, release, seq_cst)
-const RMW_ORDERINGS = (unordered, monotonic, acquire, release, acq_rel, seq_cst)
+const RMW_ORDERINGS = (monotonic, acquire, release, acq_rel, seq_cst)
 const CAS_SUCCESS_ORDERINGS = (monotonic, acquire, release, acq_rel, seq_cst)
 const CAS_FAILURE_ORDERINGS = (monotonic, acquire, seq_cst)
 
