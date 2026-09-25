@@ -151,6 +151,22 @@ function test_fence_is_emitted()
     end
 end
 
+function catch_fence(ord)
+    try
+        UnsafeAtomics.fence(ord, none)
+    catch err
+        return err
+    end
+    return nothing
+end
+
+function test_fence_unordered_error()
+    # Julia's inference thinks the intrinsic throws another type of exception, which Julia
+    # 1.11 miscompiled when the error was caught, corrupting memory.
+    @test catch_fence(unordered) isa Base.ConcurrencyViolationError
+    @test catch_fence(monotonic) === nothing
+end
+
 function test_fence_weak_orderings()
     # `fence` requires at least `acquire`. The intrinsic accepts `monotonic` and turns
     # it into a no-op, but rejects `unordered`; preserve both behaviors in the fallback.
