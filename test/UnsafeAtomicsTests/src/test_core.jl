@@ -5,6 +5,7 @@ using UnsafeAtomics: none, singlethread
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
 using InteractiveUtils: code_llvm
 using Test
+using Base: ConcurrencyViolationError
 
 using ..Bits
 
@@ -152,6 +153,31 @@ function test_syncscope_is_emitted()
         @test occursin(Regex("store atomic .* $scope release"), llvm_ir(scoped_store!, Tuple{P,T}))
         @test occursin(Regex("cmpxchg .* $scope acq_rel acquire"), llvm_ir(scoped_cas!, Tuple{P,T,T}))
         @test occursin(Regex("atomicrmw f?add .* $scope acq_rel"), llvm_ir(scoped_add!, Tuple{P,T}))
+    end
+end
+
+function test_unsupported_arguments()
+    # These used to recurse in the `as_native_uint` fallbacks until the stack overflowed.
+    unsupported_scope = UnsafeAtomics.Internal.LLVMSyncScope{:workgroup}()
+    @testset for T in [Int32, Float32]
+        xs = T[1, 2]
+        ptr = pointer(xs, 1)
+        GC.@preserve xs begin
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, release)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, acq_rel)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.store!(ptr, T(3), acquire)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.store!(ptr, T(3), acq_rel)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(
+                ptr, T(1), T(3), unordered, monotonic)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(
+                ptr, T(1), T(3), seq_cst, release)
+            @test_throws ArgumentError UnsafeAtomics.load(ptr, monotonic, unsupported_scope)
+            @test_throws ArgumentError UnsafeAtomics.store!(
+                ptr, T(3), monotonic, unsupported_scope)
+            @test_throws ArgumentError UnsafeAtomics.cas!(
+                ptr, T(1), T(3), monotonic, monotonic, unsupported_scope)
+            @test xs == T[1, 2]
+        end
     end
 end
 
