@@ -26,12 +26,14 @@ module Internal
 
 using Base.Sys: WORD_SIZE
 using Base: bitcast, llvmcall
+using Core: LLVMPtr
 
 using ..UnsafeAtomics: UnsafeAtomics, Ordering, SyncScope, right
 
 include("utils.jl")
 include("orderings.jl")
 include("syncscopes.jl")
+include("generator.jl")
 include("core.jl")
 
 end  # module Internal
