@@ -7,6 +7,10 @@ using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes
 using Test
 using Base: ConcurrencyViolationError
 
+# the operations that apply to integers
+const INT_RMW_TABLE = [(op, name) for (op, name) in OP_RMW_TABLE
+                       if !(op in (UnsafeAtomics.fmax, UnsafeAtomics.fmin))]
+
 llvmptr(xs::Array, i) = reinterpret(Core.LLVMPtr{eltype(xs),0}, pointer(xs, i))
 
 function check_default_ordering(T::Type)
@@ -28,7 +32,7 @@ function check_default_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
         desired = (old = x1, success = true)
         @test UnsafeAtomics.cas!(ptr, x1, x2) === (old = x1, success = true)
         @test xs[1] === x2
-        @testset for (op, name) in OP_RMW_TABLE
+        @testset for (op, name) in INT_RMW_TABLE
             xs[1] = x1
             @test UnsafeAtomics.modify!(ptr, op, x2) === (x1 => op(x1, x2))
             @test xs[1] === op(x1, x2)
@@ -69,7 +73,7 @@ function check_explicit_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
         desired = (old = x1, success = true)
         @test UnsafeAtomics.cas!(ptr, x1, x2, acq_rel, acquire) === desired
         @test xs[1] === x2
-        @testset for (op, name) in OP_RMW_TABLE
+        @testset for (op, name) in INT_RMW_TABLE
             xs[1] = x1
             @test UnsafeAtomics.modify!(ptr, op, x2, acq_rel) === (x1 => op(x1, x2))
             @test xs[1] === op(x1, x2)

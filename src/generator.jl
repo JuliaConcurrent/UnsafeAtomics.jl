@@ -302,11 +302,16 @@ function native_rmw(@nospecialize(op), @nospecialize(T))
         # a bitwise nand of Bools isn't a Bool
         return int ? :nand : nothing
     elseif op === max
+        # Julia's `max` propagates NaNs and orders -0.0 before 0.0, like LLVM's `fmaximum`
         return T <: Base.BitSigned ? :max : T <: Base.BitUnsigned || bool ? :umax :
-               float ? :fmax : nothing
+               float && :fmaximum in RMW_OPERATIONS ? :fmaximum : nothing
     elseif op === min
         return T <: Base.BitSigned ? :min : T <: Base.BitUnsigned || bool ? :umin :
-               float ? :fmin : nothing
+               float && :fminimum in RMW_OPERATIONS ? :fminimum : nothing
+    elseif op === UnsafeAtomics.fmax
+        return float ? :fmax : nothing
+    elseif op === UnsafeAtomics.fmin
+        return float ? :fmin : nothing
     end
     return nothing
 end

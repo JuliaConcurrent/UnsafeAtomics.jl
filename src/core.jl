@@ -47,7 +47,24 @@ const OP_RMW_TABLE = [
     (⊻) => xor,
     max => :max,
     min => :min,
+    UnsafeAtomics.fmax => :fmax,
+    UnsafeAtomics.fmin => :fmin,
 ]
+
+const FMAX_DOC = """
+    UnsafeAtomics.fmax(x, y)
+    UnsafeAtomics.fmin(x, y)
+
+The maximum and minimum of floating-point numbers as defined by IEEE 754 `maxNum` and
+`minNum`: unlike `max` and `min`, a NaN operand is ignored in favour of the other one.
+`modify!` and `fmax!`/`fmin!` use the `atomicrmw fmax`/`fmin` instructions for these, whose
+choice between zeros of opposite signs, and of NaN payloads, depends on the target and LLVM
+version.
+"""
+@doc FMAX_DOC UnsafeAtomics.fmax(x::T, y::T) where {T<:AbstractFloat} =
+    isnan(x) ? y : isnan(y) ? x : max(x, y)
+@doc FMAX_DOC UnsafeAtomics.fmin(x::T, y::T) where {T<:AbstractFloat} =
+    isnan(x) ? y : isnan(y) ? x : min(x, y)
 
 for (op, rmwop) in OP_RMW_TABLE
     fn = Symbol(rmwop, "!")
@@ -211,6 +228,8 @@ for typ in (inttypes..., floattypes...)
     end
 
     for (op, rmwop) in OP_RMW_TABLE
+        # floating-point only, and implemented with the generic `modify!`
+        op in (UnsafeAtomics.fmax, UnsafeAtomics.fmin) && continue
         rmw = string(rmwop)
         fn = Symbol(rmw, "!")
         if (rmw == "max" || rmw == "min") && typ <: Unsigned

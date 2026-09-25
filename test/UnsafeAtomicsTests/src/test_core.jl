@@ -24,11 +24,13 @@ end
 
 rmw_table_for(@nospecialize T) =
     if T <: AbstractFloat
-        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (+, -, max, min))
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE
+         if op in (+, -, max, min, UnsafeAtomics.fmax, UnsafeAtomics.fmin))
     elseif T <: AbstractBits
         ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (right,))
     else
-        OP_RMW_TABLE
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE
+         if !(op in (UnsafeAtomics.fmax, UnsafeAtomics.fmin)))
     end
 
 function test_default_ordering(T::Type)
@@ -137,7 +139,10 @@ function test_explicit_syncscope()
     UnsafeAtomics.fence(seq_cst, none)
 end
 
-llvm_ir(f, types) = sprint(io -> code_llvm(io, f, types; debuginfo = :none))
+# without the counters that code coverage adds (`atomicrmw add` on a constant address)
+llvm_ir(f, types) =
+    join(filter(!contains("inttoptr ("),
+                split(sprint(io -> code_llvm(io, f, types; debuginfo = :none)), '\n')), '\n')
 
 scoped_load(ptr, scope) = UnsafeAtomics.load(ptr, acquire, scope)
 scoped_store!(ptr, x, scope) = UnsafeAtomics.store!(ptr, x, release, scope)
@@ -288,6 +293,58 @@ function test_cas_loop_fallback()
 
     @test occursin(r"cmpxchg .* syncscope\(\"singlethread\"\) acq_rel monotonic",
                    llvm_ir(scoped_max!, Tuple{Ptr{Float64},Float64}))
+end
+
+float_modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, monotonic, device)
+
+function test_float_minmax()
+    # `max` and `min` have Julia's semantics: NaN propagates, and -0.0 < 0.0
+    @testset for T in [Float16, Float32, Float64], i in 1:2
+        xs = T[1, 0]
+        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        GC.@preserve xs begin
+            @test UnsafeAtomics.max!(ptr, T(-0.0)) === T(1)
+            @test UnsafeAtomics.modify!(ptr, max, T(NaN)) === (T(1) => T(NaN))
+            @test isnan(xs[1])
+            xs[1] = -0.0
+            @test UnsafeAtomics.modify!(ptr, max, T(0.0)) === (T(-0.0) => T(0.0))
+            @test xs[1] === T(0.0)
+            @test UnsafeAtomics.modify!(ptr, min, T(-0.0)) === (T(0.0) => T(-0.0))
+            @test xs[1] === T(-0.0)
+            @test UnsafeAtomics.min!(ptr, T(NaN)) === T(-0.0)
+            @test isnan(xs[1])
+        end
+    end
+    # `fmax` and `fmin` ignore NaN
+    @testset for T in [Float16, Float32, Float64], i in 1:2
+        xs = T[1, 0]
+        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        GC.@preserve xs begin
+            @test UnsafeAtomics.fmax!(ptr, T(NaN)) === T(1)
+            @test xs[1] === T(1)
+            @test UnsafeAtomics.modify!(ptr, UnsafeAtomics.fmax, T(2)) === (T(1) => T(2))
+            @test UnsafeAtomics.fmin!(ptr, T(NaN), acquire) === T(2)
+            @test UnsafeAtomics.modify!(ptr, UnsafeAtomics.fmin, T(-1), release) === (T(2) => T(-1))
+            @test xs[1] === T(-1)
+        end
+    end
+    @test UnsafeAtomics.fmax(NaN, 1.0) === 1.0
+    @test UnsafeAtomics.fmax(1.0, NaN) === 1.0
+    @test UnsafeAtomics.fmin(NaN32, 2f0) === 2f0
+    @test isnan(UnsafeAtomics.fmin(NaN, NaN))
+
+    # native where LLVM has the instruction; a compare-and-swap loop otherwise
+    P = Core.LLVMPtr{Float32,1}
+    ir(op) = llvm_ir(float_modify!, Tuple{P,typeof(op),Float32})
+    @test occursin("atomicrmw fmax", ir(UnsafeAtomics.fmax))
+    @test occursin("atomicrmw fmin", ir(UnsafeAtomics.fmin))
+    if Base.libllvm_version >= v"21"
+        @test occursin("atomicrmw fmaximum", ir(max))
+        @test occursin("atomicrmw fminimum", ir(min))
+    else
+        @test occursin("cmpxchg", ir(max)) && !occursin("atomicrmw", ir(max))
+        @test occursin("cmpxchg", ir(min)) && !occursin("atomicrmw", ir(min))
+    end
 end
 
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
