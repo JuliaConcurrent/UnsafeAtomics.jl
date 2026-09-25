@@ -394,6 +394,18 @@ function UnsafeAtomics.modify!(x::Ptr{T}, ::typeof(right), v::T, ordering, syncs
     return bitcast(T, old) => v
 end
 
+# Operations without an atomicrmw instruction for `T` (e.g. `max` on floats, or any other
+# function) retry a cmpxchg until no other thread modified the value in between.
+@inline function UnsafeAtomics.modify!(x::Ptr{T}, op::OP, v::T, ordering, syncscope) where {T,OP}
+    ordering in RMW_ORDERINGS || throw_invalid_ordering()
+    old = UnsafeAtomics.load(x, monotonic, syncscope)
+    while true
+        new = op(old, v)
+        (old, success) = UnsafeAtomics.cas!(x, old, new, ordering, monotonic, syncscope)
+        success && return old => new
+    end
+end
+
 function UnsafeAtomics.cas!(
     x::Ptr{T},
     cmp::T,
