@@ -94,7 +94,7 @@ for typ in (inttypes..., floattypes...)
                     return llvmcall(
                         $("""
                         %ptr = $(inttoptr(lt, "%0"))
-                        %rv = load atomic $rt %ptr $ord, align $(sizeof(typ))
+                        %rv = load atomic $rt %ptr $sync $ord, align $(sizeof(typ))
                         ret $lt %rv
                         """),
                         $typ,
@@ -120,7 +120,7 @@ for typ in (inttypes..., floattypes...)
                     return llvmcall(
                         $("""
                         %ptr = $(inttoptr(lt, "%0"))
-                        store atomic $lt %1, $(ptr(lt)) %ptr $ord, align $(sizeof(typ))
+                        store atomic $lt %1, $(ptr(lt)) %ptr $sync $ord, align $(sizeof(typ))
                         ret void
                         """),
                         Cvoid,
@@ -171,7 +171,7 @@ for typ in (inttypes..., floattypes...)
                             $(
                                 """
                                 %ptr = $(inttoptr(lt, "%0"))
-                                %rs = cmpxchg $(ptr(lt)) %ptr, $lt %1, $lt %2 $success_ordering $failure_ordering
+                                %rs = cmpxchg $(ptr(lt)) %ptr, $lt %1, $lt %2 $sync $success_ordering $failure_ordering
                                 %rv = extractvalue { $lt, i1 } %rs, 0
                                 %s1 = extractvalue { $lt, i1 } %rs, 1
                                 %s8 = zext i1 %s1 to i8
@@ -234,7 +234,7 @@ for typ in (inttypes..., floattypes...)
                         old = llvmcall(
                             $("""
                             %ptr = $(inttoptr(lt, "%0"))
-                            %rv = atomicrmw $rmw $(ptr(lt)) %ptr, $lt %1 $ord
+                            %rv = atomicrmw $rmw $(ptr(lt)) %ptr, $lt %1 $sync $ord
                             ret $lt %rv
                             """),
                             $typ,

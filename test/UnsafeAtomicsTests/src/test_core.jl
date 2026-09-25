@@ -136,6 +136,25 @@ function test_explicit_syncscope()
     UnsafeAtomics.fence(seq_cst, none)
 end
 
+llvm_ir(f, types) = sprint(io -> code_llvm(io, f, types; debuginfo = :none))
+
+scoped_load(ptr) = UnsafeAtomics.load(ptr, acquire, singlethread)
+scoped_store!(ptr, x) = UnsafeAtomics.store!(ptr, x, release, singlethread)
+scoped_cas!(ptr, cmp, new) = UnsafeAtomics.cas!(ptr, cmp, new, acq_rel, acquire, singlethread)
+scoped_add!(ptr, x) = UnsafeAtomics.add!(ptr, x, acq_rel, singlethread)
+
+function test_syncscope_is_emitted()
+    # Values alone can't tell whether the scope made it into the instruction.
+    @testset for T in [Int32, UInt64, Float64]
+        P = Ptr{T}
+        scope = raw"syncscope\(\"singlethread\"\)"
+        @test occursin(Regex("load atomic .* $scope acquire"), llvm_ir(scoped_load, Tuple{P}))
+        @test occursin(Regex("store atomic .* $scope release"), llvm_ir(scoped_store!, Tuple{P,T}))
+        @test occursin(Regex("cmpxchg .* $scope acq_rel acquire"), llvm_ir(scoped_cas!, Tuple{P,T,T}))
+        @test occursin(Regex("atomicrmw f?add .* $scope acq_rel"), llvm_ir(scoped_add!, Tuple{P,T}))
+    end
+end
+
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
 barrier_release() = (UnsafeAtomics.fence(release); nothing)
 barrier_acq_rel() = (UnsafeAtomics.fence(acq_rel); nothing)
