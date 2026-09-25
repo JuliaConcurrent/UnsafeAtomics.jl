@@ -24,6 +24,27 @@ base_ordering(::LLVMOrdering{:acq_rel}) = :acquire_release
 
 # The failure ordering of a cmpxchg can't release. Derive it from the success ordering
 # like C++ does.
-failure_order(::typeof(release)) = monotonic
-failure_order(::typeof(acq_rel)) = acquire
-failure_order(order) = order
+@inline failure_order(order) =
+    (order === release || order === :release) ? monotonic :
+    (order === acq_rel || order === :acq_rel || order === :acquire_release) ? acquire : order
+
+# Call `f(Val(name), args...)` with the LLVM name of the ordering. Orderings are selected by
+# branching, not by dispatch, so that an ordering that isn't a constant, e.g. a `Union` of
+# several of them or a `Symbol`, results in a branch per ordering rather than in a dynamic
+# call (which a GPU can't do). A constant ordering leaves a single branch. Comparing with `===`
+# only compares pointers, even when Julia widens the `Union` to the abstract type, whereas
+# `isa` would load the type from the object, i.e. from host memory on a GPU.
+@inline with_ordering(f, order, args...) =
+    (order === monotonic || order === :monotonic) ? f(Val(:monotonic), args...) :
+    (order === acquire || order === :acquire) ? f(Val(:acquire), args...) :
+    (order === release || order === :release) ? f(Val(:release), args...) :
+    (order === acq_rel || order === :acq_rel || order === :acquire_release) ?
+        f(Val(:acq_rel), args...) :
+    (order === seq_cst || order === :seq_cst || order === :sequentially_consistent) ?
+        f(Val(:seq_cst), args...) :
+    (order === unordered || order === :unordered) ? f(Val(:unordered), args...) :
+    throw_invalid_ordering()
+
+# Without arguments: passing an `order` that is a `Union` would make this a dynamic call.
+@noinline throw_invalid_ordering() =
+    throw(Base.ConcurrencyViolationError("invalid atomic ordering"))
