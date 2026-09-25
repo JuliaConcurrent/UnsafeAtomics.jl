@@ -76,59 +76,109 @@ else
     inttoptr(_, arg) = "bitcast ptr $arg to ptr"
 end
 
+# The atomics that `Core.Intrinsics` can't express, as llvmcall. The IR contains the scope,
+# so it's generated from the scope's type parameter.
+@generated function llvm_load(x::Ptr{T}, ::LLVMOrdering{ord}, ::LLVMSyncScope{sync}) where {T,ord,sync}
+    lt = llvmtypes[T]
+    ir = """
+        %ptr = $(inttoptr(lt, "%0"))
+        %rv = load atomic $lt, $(ptr(lt)) %ptr $(LLVMSyncScope{sync}()) $ord, align $(sizeof(T))
+        ret $lt %rv
+        """
+    return :(llvmcall($ir, $T, Tuple{Ptr{$T}}, x))
+end
+
+@generated function llvm_store!(x::Ptr{T}, v::T, ::LLVMOrdering{ord}, ::LLVMSyncScope{sync}) where {T,ord,sync}
+    lt = llvmtypes[T]
+    ir = """
+        %ptr = $(inttoptr(lt, "%0"))
+        store atomic $lt %1, $(ptr(lt)) %ptr $(LLVMSyncScope{sync}()) $ord, align $(sizeof(T))
+        ret void
+        """
+    return :(llvmcall($ir, Cvoid, Tuple{Ptr{$T},$T}, x, v))
+end
+
+@generated function llvm_cas!(
+    x::Ptr{T},
+    cmp::T,
+    new::T,
+    ::LLVMOrdering{success_ordering},
+    ::LLVMOrdering{failure_ordering},
+    ::LLVMSyncScope{sync},
+) where {T,success_ordering,failure_ordering,sync}
+    lt = llvmtypes[T]
+    ir = """
+        %ptr = $(inttoptr(lt, "%0"))
+        %rs = cmpxchg $(ptr(lt)) %ptr, $lt %1, $lt %2 $(LLVMSyncScope{sync}()) $success_ordering $failure_ordering
+        %rv = extractvalue { $lt, i1 } %rs, 0
+        %s1 = extractvalue { $lt, i1 } %rs, 1
+        %s8 = zext i1 %s1 to i8
+        %sptr = $(inttoptr("i8", "%3"))
+        store i8 %s8, $(ptr("i8")) %sptr
+        ret $lt %rv
+        """
+    return quote
+        success = Ref{Int8}()
+        GC.@preserve success begin
+            old = llvmcall(
+                $ir,
+                $T,
+                Tuple{Ptr{$T},$T,$T,Ptr{Int8}},
+                x,
+                cmp,
+                new,
+                Ptr{Int8}(pointer_from_objref(success)),
+            )
+        end
+        return (old = old, success = !iszero(success[]))
+    end
+end
+
+@generated function llvm_rmw!(
+    x::Ptr{T},
+    ::Val{rmw},
+    v::T,
+    ::LLVMOrdering{ord},
+    ::LLVMSyncScope{sync},
+) where {T,rmw,ord,sync}
+    lt = llvmtypes[T]
+    ir = """
+        %ptr = $(inttoptr(lt, "%0"))
+        %rv = atomicrmw $rmw $(ptr(lt)) %ptr, $lt %1 $(LLVMSyncScope{sync}()) $ord
+        ret $lt %rv
+        """
+    return :(llvmcall($ir, $T, Tuple{Ptr{$T},$T}, x, v))
+end
+
 # Based on: https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl
 for typ in (inttypes..., floattypes...)
-    lt = llvmtypes[typ]
-    rt = "$lt, $(ptr(lt))"
-
     for ord in orderings
         ord in (release, acq_rel) && continue
 
-        for sync in syncscopes 
+        for sync in syncscopes
             if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
                 @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)), ::$(typeof(sync)))
                     return Core.Intrinsics.atomic_pointerref(x, base_ordering($ord))
                 end
             else
-                @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)), ::$(typeof(sync)))
-                    return llvmcall(
-                        $("""
-                        %ptr = $(inttoptr(lt, "%0"))
-                        %rv = load atomic $rt %ptr $sync $ord, align $(sizeof(typ))
-                        ret $lt %rv
-                        """),
-                        $typ,
-                        Tuple{Ptr{$typ}},
-                        x,
-                    )
-                end
+                @eval UnsafeAtomics.load(x::Ptr{$typ}, ord::$(typeof(ord)), sync::$(typeof(sync))) =
+                    llvm_load(x, ord, sync)
             end
         end
     end
 
     for ord in orderings
         ord in (acquire, acq_rel) && continue
-        
-        for sync in syncscopes 
+
+        for sync in syncscopes
             if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
                 @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)), ::$(typeof(sync)))
                     Core.Intrinsics.atomic_pointerset(x, v, base_ordering($ord))
                     return nothing
                 end
             else
-                @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)), ::$(typeof(sync)))
-                    return llvmcall(
-                        $("""
-                        %ptr = $(inttoptr(lt, "%0"))
-                        store atomic $lt %1, $(ptr(lt)) %ptr $sync $ord, align $(sizeof(typ))
-                        ret void
-                        """),
-                        Cvoid,
-                        Tuple{Ptr{$typ},$typ},
-                        x,
-                        v,
-                    )
-                end
+                @eval UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ord::$(typeof(ord)), sync::$(typeof(sync))) =
+                    llvm_store!(x, v, ord, sync)
             end
         end
     end
@@ -138,7 +188,7 @@ for typ in (inttypes..., floattypes...)
 
         typ <: AbstractFloat && break
 
-        for sync in syncscopes 
+        for sync in syncscopes
             if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
                 @eval function UnsafeAtomics.cas!(
                     x::Ptr{$typ},
@@ -157,39 +207,14 @@ for typ in (inttypes..., floattypes...)
                     )
                 end
             else
-                @eval function UnsafeAtomics.cas!(
+                @eval UnsafeAtomics.cas!(
                     x::Ptr{$typ},
                     cmp::$typ,
                     new::$typ,
-                    ::$(typeof(success_ordering)),
-                    ::$(typeof(failure_ordering)),
-                    ::$(typeof(sync)),
-                )
-                    success = Ref{Int8}()
-                    GC.@preserve success begin
-                        old = llvmcall(
-                            $(
-                                """
-                                %ptr = $(inttoptr(lt, "%0"))
-                                %rs = cmpxchg $(ptr(lt)) %ptr, $lt %1, $lt %2 $sync $success_ordering $failure_ordering
-                                %rv = extractvalue { $lt, i1 } %rs, 0
-                                %s1 = extractvalue { $lt, i1 } %rs, 1
-                                %s8 = zext i1 %s1 to i8
-                                %sptr = $(inttoptr("i8", "%3"))
-                                store i8 %s8, $(ptr("i8")) %sptr
-                                ret $lt %rv
-                                """
-                            ),
-                            $typ,
-                            Tuple{Ptr{$typ},$typ,$typ,Ptr{Int8}},
-                            x,
-                            cmp,
-                            new,
-                            Ptr{Int8}(pointer_from_objref(success)),
-                        )
-                    end
-                    return (old = old, success = !iszero(success[]))
-                end
+                    success_ordering::$(typeof(success_ordering)),
+                    failure_ordering::$(typeof(failure_ordering)),
+                    sync::$(typeof(sync)),
+                ) = llvm_cas!(x, cmp, new, success_ordering, failure_ordering, sync)
             end
         end
     end
@@ -229,20 +254,10 @@ for typ in (inttypes..., floattypes...)
                         x::Ptr{$typ},
                         ::typeof($op),
                         v::$typ,
-                        ::$(typeof(ord)),
-                        ::$(typeof(sync)),
+                        ord::$(typeof(ord)),
+                        sync::$(typeof(sync)),
                     )
-                        old = llvmcall(
-                            $("""
-                            %ptr = $(inttoptr(lt, "%0"))
-                            %rv = atomicrmw $rmw $(ptr(lt)) %ptr, $lt %1 $sync $ord
-                            ret $lt %rv
-                            """),
-                            $typ,
-                            Tuple{Ptr{$typ},$typ},
-                            x,
-                            v,
-                        )
+                        old = llvm_rmw!(x, $(Val(Symbol(rmw))), v, ord, sync)
                         return old => $op(old, v)
                     end
                 end
