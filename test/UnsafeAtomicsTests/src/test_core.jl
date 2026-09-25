@@ -191,7 +191,7 @@ end
 
 function test_unsupported_arguments()
     # These used to recurse in the `as_native_uint` fallbacks until the stack overflowed.
-    unsupported_scope = :workgroup
+    unsupported_scope = :agent  # only canonical scopes can be passed as a Symbol
     @testset for T in [Int32, Float32]
         xs = T[1, 2]
         ptr = pointer(xs, 1)
@@ -204,11 +204,14 @@ function test_unsupported_arguments()
                 ptr, T(1), T(3), unordered, monotonic)
             @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(
                 ptr, T(1), T(3), seq_cst, release)
-            @test_throws MethodError UnsafeAtomics.load(ptr, monotonic, unsupported_scope)
-            @test_throws MethodError UnsafeAtomics.store!(
+            @test_throws ArgumentError UnsafeAtomics.load(ptr, monotonic, unsupported_scope)
+            @test_throws ArgumentError UnsafeAtomics.store!(
                 ptr, T(3), monotonic, unsupported_scope)
-            @test_throws MethodError UnsafeAtomics.cas!(
+            @test_throws ArgumentError UnsafeAtomics.cas!(
                 ptr, T(1), T(3), monotonic, monotonic, unsupported_scope)
+            @test_throws ArgumentError UnsafeAtomics.fence(acquire, unsupported_scope)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, :acquire_release)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, :bogus)
             @test xs == T[1, 2]
         end
     end
@@ -387,7 +390,7 @@ function test_cpu_seq_cst_fence()
 
     # The x86_64 inline assembly must only be reachable through the hook, and only
     # before LLVM 20, which emits the same instruction for a plain fence.
-    src, _ = only(code_typed(UnsafeAtomics.fence, Tuple{typeof(seq_cst),typeof(none)};
+    src, _ = only(code_typed(UnsafeAtomics.Internal.system_fence, Tuple{typeof(seq_cst)};
                              optimize = false))
     @test occursin("cpu_seq_cst_fence", string(src)) ==
           (Sys.ARCH === :x86_64 && Base.libllvm_version < v"20")

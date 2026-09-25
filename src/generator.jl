@@ -76,7 +76,6 @@ function pointer_argument(::Type{P}, lt) where {P}
     end
 end
 
-normalize_order(o) = o === :acquire_release ? :acq_rel : o === :sequentially_consistent ? :seq_cst : o
 julia_order(o) = o === :acq_rel ? :acquire_release : o === :seq_cst ? :sequentially_consistent : o
 order_strength(o) = findfirst(==(o), (:unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cst))
 
