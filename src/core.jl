@@ -155,32 +155,26 @@ for typ in (inttypes..., floattypes...)
     for ord in orderings
         ord in (release, acq_rel) && continue
 
-        for sync in syncscopes
-            if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
-                @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)), ::$(typeof(sync)))
-                    return Core.Intrinsics.atomic_pointerref(x, base_ordering($ord))
-                end
-            else
-                @eval UnsafeAtomics.load(x::Ptr{$typ}, ord::$(typeof(ord)), sync::$(typeof(sync))) =
-                    llvm_load(x, ord, sync)
+        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
+            @eval function UnsafeAtomics.load(x::Ptr{$typ}, ::$(typeof(ord)), ::typeof(none))
+                return Core.Intrinsics.atomic_pointerref(x, base_ordering($ord))
             end
         end
+        @eval UnsafeAtomics.load(x::Ptr{$typ}, ord::$(typeof(ord)), sync::LLVMSyncScope) =
+            llvm_load(x, ord, sync)
     end
 
     for ord in orderings
         ord in (acquire, acq_rel) && continue
 
-        for sync in syncscopes
-            if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
-                @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)), ::$(typeof(sync)))
-                    Core.Intrinsics.atomic_pointerset(x, v, base_ordering($ord))
-                    return nothing
-                end
-            else
-                @eval UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ord::$(typeof(ord)), sync::$(typeof(sync))) =
-                    llvm_store!(x, v, ord, sync)
+        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
+            @eval function UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ::$(typeof(ord)), ::typeof(none))
+                Core.Intrinsics.atomic_pointerset(x, v, base_ordering($ord))
+                return nothing
             end
         end
+        @eval UnsafeAtomics.store!(x::Ptr{$typ}, v::$typ, ord::$(typeof(ord)), sync::LLVMSyncScope) =
+            llvm_store!(x, v, ord, sync)
     end
 
     for success_ordering in (monotonic, acquire, release, acq_rel, seq_cst),
@@ -188,35 +182,32 @@ for typ in (inttypes..., floattypes...)
 
         typ <: AbstractFloat && break
 
-        for sync in syncscopes
-            if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
-                @eval function UnsafeAtomics.cas!(
-                    x::Ptr{$typ},
-                    cmp::$typ,
-                    new::$typ,
-                    ::$(typeof(success_ordering)),
-                    ::$(typeof(failure_ordering)),
-                    ::$(typeof(sync)),
+        if ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
+            @eval function UnsafeAtomics.cas!(
+                x::Ptr{$typ},
+                cmp::$typ,
+                new::$typ,
+                ::$(typeof(success_ordering)),
+                ::$(typeof(failure_ordering)),
+                ::typeof(none),
+            )
+                return Core.Intrinsics.atomic_pointerreplace(
+                    x,
+                    cmp,
+                    new,
+                    base_ordering($success_ordering),
+                    base_ordering($failure_ordering)
                 )
-                    return Core.Intrinsics.atomic_pointerreplace(
-                        x,
-                        cmp,
-                        new,
-                        base_ordering($success_ordering),
-                        base_ordering($failure_ordering)
-                    )
-                end
-            else
-                @eval UnsafeAtomics.cas!(
-                    x::Ptr{$typ},
-                    cmp::$typ,
-                    new::$typ,
-                    success_ordering::$(typeof(success_ordering)),
-                    failure_ordering::$(typeof(failure_ordering)),
-                    sync::$(typeof(sync)),
-                ) = llvm_cas!(x, cmp, new, success_ordering, failure_ordering, sync)
             end
         end
+        @eval UnsafeAtomics.cas!(
+            x::Ptr{$typ},
+            cmp::$typ,
+            new::$typ,
+            success_ordering::$(typeof(success_ordering)),
+            failure_ordering::$(typeof(failure_ordering)),
+            sync::LLVMSyncScope,
+        ) = llvm_cas!(x, cmp, new, success_ordering, failure_ordering, sync)
     end
 
     for (op, rmwop) in OP_RMW_TABLE
@@ -237,30 +228,27 @@ for typ in (inttypes..., floattypes...)
         end
         for ord in orderings
             ord === unordered && continue  # atomicrmw can't be unordered
-            for sync in syncscopes
-                # Enable this code iff https://github.com/JuliaLang/julia/pull/45122 get's merged
-                if false && ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
-                    @eval function UnsafeAtomics.modify!(
-                            x::Ptr{$typ},
-                            op::typeof($op),
-                            v::$typ,
-                            ::$(typeof(ord)),
-                            ::$(typeof(sync)),
-                        )
-                            return Core.Intrinsics.atomic_pointermodify(x, op, v, base_ordering($ord))
-                    end
-                else
-                    @eval function UnsafeAtomics.modify!(
+            # Enable this code iff https://github.com/JuliaLang/julia/pull/45122 get's merged
+            if false && ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE
+                @eval function UnsafeAtomics.modify!(
                         x::Ptr{$typ},
-                        ::typeof($op),
+                        op::typeof($op),
                         v::$typ,
-                        ord::$(typeof(ord)),
-                        sync::$(typeof(sync)),
+                        ::$(typeof(ord)),
+                        ::typeof(none),
                     )
-                        old = llvm_rmw!(x, $(Val(Symbol(rmw))), v, ord, sync)
-                        return old => $op(old, v)
-                    end
+                        return Core.Intrinsics.atomic_pointermodify(x, op, v, base_ordering($ord))
                 end
+            end
+            @eval function UnsafeAtomics.modify!(
+                x::Ptr{$typ},
+                ::typeof($op),
+                v::$typ,
+                ord::$(typeof(ord)),
+                sync::LLVMSyncScope,
+            )
+                old = llvm_rmw!(x, $(Val(Symbol(rmw))), v, ord, sync)
+                return old => $op(old, v)
             end
         end
     end
@@ -395,7 +383,7 @@ const CAS_FAILURE_ORDERINGS = (monotonic, acquire, seq_cst)
 # integer, no specialized method matched: report why, instead of recursing forever.
 @noinline function throw_unsupported(::Type{T}, syncscope, valid_ordering::Bool) where {T}
     valid_ordering || throw_invalid_ordering()
-    syncscope in syncscopes ||
+    syncscope isa LLVMSyncScope ||
         throw(ArgumentError(string("unsupported syncscope: ", repr(syncscope))))
     throw(ArgumentError(string("unsupported atomic type: ", T)))
 end
