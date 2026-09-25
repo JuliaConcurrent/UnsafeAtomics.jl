@@ -268,6 +268,28 @@ const FENCE_INTRINSIC_ELIDABLE =
 @noinline throw_invalid_ordering() =
     throw(Base.ConcurrencyViolationError("invalid atomic ordering"))
 
+# The system-scope seq_cst fence on the host CPU. GPU back-ends overlay this function with a
+# plain `fence seq_cst`, as the x86 assembly below must not end up in device code.
+if Sys.ARCH == :x86_64
+    # FIXME: Disable this once on LLVM 19
+    # This is unfortunatly required for good-performance on AMD
+    # https://github.com/llvm/llvm-project/pull/106555
+    @inline cpu_seq_cst_fence() = Base.llvmcall(
+        (raw"""
+        define void @fence() #0 {
+        entry:
+            tail call void asm sideeffect "lock orq $$0 , (%rsp)", ""(); should this have ~{memory}
+            ret void
+        }
+        attributes #0 = { alwaysinline }
+        """, "fence"), Nothing, Tuple{})
+else
+    @inline cpu_seq_cst_fence() = llvmcall("""
+        fence seq_cst
+        ret void
+        """, Cvoid, Tuple{})
+end
+
 for sync in syncscopes
     if sync == none
         if !FENCE_INTRINSIC_ELIDABLE
@@ -314,20 +336,7 @@ for sync in syncscopes
         @eval UnsafeAtomics.fence(::typeof(unordered), ::$(typeof(sync))) =
             throw_invalid_ordering()
         if Sys.ARCH == :x86_64
-            # FIXME: Disable this once on LLVM 19
-            # This is unfortunatly required for good-performance on AMD
-            # https://github.com/llvm/llvm-project/pull/106555
-            @eval function UnsafeAtomics.fence(::typeof(seq_cst), ::$(typeof(sync)))
-                Base.llvmcall(
-                    (raw"""
-                    define void @fence() #0 {
-                    entry:
-                        tail call void asm sideeffect "lock orq $$0 , (%rsp)", ""(); should this have ~{memory}
-                        ret void
-                    }
-                    attributes #0 = { alwaysinline }
-                    """, "fence"), Nothing, Tuple{})
-            end
+            @eval UnsafeAtomics.fence(::typeof(seq_cst), ::$(typeof(sync))) = cpu_seq_cst_fence()
         end
     else
         for ord in orderings

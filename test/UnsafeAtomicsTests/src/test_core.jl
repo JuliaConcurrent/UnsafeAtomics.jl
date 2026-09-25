@@ -3,7 +3,7 @@ module TestCore
 using UnsafeAtomics: UnsafeAtomics, unordered, monotonic, acquire, release, acq_rel, seq_cst, right
 using UnsafeAtomics: none, singlethread
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
-using InteractiveUtils: code_llvm
+using InteractiveUtils: code_llvm, code_typed
 using Test
 using Base: ConcurrencyViolationError
 
@@ -291,6 +291,19 @@ function test_fence_unordered_error()
     # 1.11 miscompiled when the error was caught, corrupting memory.
     @test catch_fence(unordered) isa Base.ConcurrencyViolationError
     @test catch_fence(monotonic) === nothing
+end
+
+function test_cpu_seq_cst_fence()
+    # GPU back-ends overlay this hook, so it must exist on every host.
+    hook = UnsafeAtomics.Internal.cpu_seq_cst_fence
+    @test hook() === nothing
+    @test occursin(r"^\s*fence seq_cst"m, llvm_ir(hook, Tuple{})) ||
+          occursin("asm sideeffect", llvm_ir(hook, Tuple{}))
+
+    # The x86_64 inline assembly must only be reachable through the hook.
+    src, _ = only(code_typed(UnsafeAtomics.fence, Tuple{typeof(seq_cst),typeof(none)};
+                             optimize = false))
+    @test occursin("cpu_seq_cst_fence", string(src)) == (Sys.ARCH === :x86_64)
 end
 
 function test_fence_weak_orderings()
