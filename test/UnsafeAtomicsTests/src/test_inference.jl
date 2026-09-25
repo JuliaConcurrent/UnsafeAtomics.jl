@@ -75,6 +75,52 @@ function test_constant_orderings()
     end
 end
 
+kw_load(p) = UnsafeAtomics.load(p, acquire, device; volatile = true, align = 16)
+kw_store(p, x) = UnsafeAtomics.store!(p, x, release, device; volatile = true)
+kw_cas(p, c, n) = UnsafeAtomics.cas!(p, c, n, acq_rel, acquire, device; weak = true, align = 8)
+kw_modify(p, x) = UnsafeAtomics.modify!(p, +, x, monotonic, device; volatile = true, align = 8)
+kw_add(p, x) = UnsafeAtomics.add!(p, x; volatile = true)
+kw_max_cas(p, x) = UnsafeAtomics.modify!(p, *, x, monotonic, device; volatile = true, align = 8)
+kw_runtime_flag(p, v::Bool) = UnsafeAtomics.load(p, acquire, device; volatile = v)
+# constant keywords are only propagated into a wrapper that is inlined
+@inline kw_forwarded(p; kwargs...) = UnsafeAtomics.load(p, acquire, device; kwargs...)
+kw_forward(p) = kw_forwarded(p; volatile = true, align = 8)
+
+function test_keywords()
+    function instruction(f, types)
+        ir = llvm_ir(f, types)
+        @test !occursin(r"apply_generic|jl_invoke|jl_f_", ir)
+        return [strip(l) for l in split(ir, '\n') if occursin(r"atomic|cmpxchg", l) && !occursin("tag_addr", l)]
+    end
+    @test endswith(only(instruction(kw_load, Tuple{P})), "syncscope(\"device\") acquire, align 16")
+    @test occursin("load atomic volatile", only(instruction(kw_load, Tuple{P})))
+    @test occursin("store atomic volatile", only(instruction(kw_store, Tuple{P,Int32})))
+    cas = only(instruction(kw_cas, Tuple{P,Int32,Int32}))
+    @test occursin("cmpxchg weak", cas) && endswith(cas, "acq_rel acquire, align 8")
+    @test occursin(r"atomicrmw volatile add .* align 8$", only(instruction(kw_modify, Tuple{P,Int32})))
+    @test occursin(r"atomicrmw volatile add .* seq_cst, align 4$", only(instruction(kw_add, Tuple{P,Int32})))
+    # the compare-and-swap loop passes them on
+    loop = instruction(kw_max_cas, Tuple{P,Int32})
+    @test length(loop) >= 2
+    @test all(l -> occursin("volatile", l) && endswith(l, "align 8"), loop)
+    # a flag that isn't a constant is a branch
+    @test sort(instruction(kw_runtime_flag, Tuple{P,Bool})) ==
+          sort(["%v.i = load atomic i32, ptr addrspace(1) %\"p::LLVMPtr\" syncscope(\"device\") acquire, align 4",
+                "%v.i1 = load atomic volatile i32, ptr addrspace(1) %\"p::LLVMPtr\" syncscope(\"device\") acquire, align 4"]) ||
+          length(instruction(kw_runtime_flag, Tuple{P,Bool})) == 2
+    @test occursin("load atomic volatile", only(instruction(kw_forward, Tuple{P})))
+
+    xs = Int64[1, 2]
+    GC.@preserve xs begin
+        ptr = pointer(xs)
+        @test UnsafeAtomics.load(ptr; volatile = true, align = 16) == 1
+        @test UnsafeAtomics.cas!(ptr, 1, 3; weak = false) === (old = 1, success = true)
+        @test_throws ArgumentError UnsafeAtomics.load(ptr; align = 4)
+        @test_throws ArgumentError UnsafeAtomics.load(ptr; align = 12)
+        @test_throws ArgumentError UnsafeAtomics.store!(ptr, 1; align = 0)
+    end
+end
+
 function test_runtime_values()
     xs = Int32[0]
     GC.@preserve xs begin

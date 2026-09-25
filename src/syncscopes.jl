@@ -41,7 +41,7 @@ scope_name(s::LLVMSyncScope) = s === system ? :system : llvm_syncscope(s)
 # call. The canonical scopes can also be passed as a `Symbol`. Other scopes have to be known
 # from their type: Julia widens a `Union` of more than 3 scopes to the abstract type, which
 # leaves a dynamic call for them, so scopes chosen at run time are best passed as Symbols.
-@inline with_scope(f, scope, args...) =
+@inline with_scope(f::F, scope, args::Vararg{Any,N}) where {F,N} =
     (scope === system || scope === :system) ? f(Val(:system), args...) :
     (scope === device || scope === :device) ? f(Val(:device), args...) :
     (scope === workgroup || scope === :workgroup) ? f(Val(:workgroup), args...) :
@@ -50,19 +50,30 @@ scope_name(s::LLVMSyncScope) = s === system ? :system : llvm_syncscope(s)
     scope isa LLVMSyncScope ? f(Val(scope_name(scope)), args...) :
     throw_invalid_scope()
 
-# `f(order, scope)` and `f(success_order, failure_order, scope)` with `Val`s of the names.
-# Orderings and scopes that aren't constants are passed along as arguments, never captured in
+# `f(order, scope, args...)` and `f(success_order, failure_order, scope, args...)` with `Val`s
+# of the names. Values that aren't constants are passed along as arguments, never captured in
 # a closure: the type of such a closure depends on their run-time type, which would make
 # creating it a dynamic call.
-@inline with_ordering_and_scope(f, order, scope) =
-    with_ordering(_with_scope, order, f, scope)
-@inline _with_scope(o, f, scope) = with_scope(_call_with, scope, f, o)
-@inline _call_with(s, f, o) = f(o, s)
+@inline with_ordering_and_scope(f::F, order, scope, args::Vararg{Any,N}) where {F,N} =
+    with_ordering(_with_scope, order, f, scope, args...)
+@inline _with_scope(o, f::F, scope, args::Vararg{Any,N}) where {F,N} =
+    with_scope(_call_with, scope, f, o, args...)
+@inline _call_with(s, f::F, o, args::Vararg{Any,N}) where {F,N} = f(o, s, args...)
 
-@inline with_orderings_and_scope(f, success, failure, scope) =
-    with_ordering(_with_failure, success, f, failure, scope)
-@inline _with_failure(so, f, failure, scope) =
-    with_ordering(_with_scope, failure, (fo, s) -> f(so, fo, s), scope)
+@inline with_orderings_and_scope(f::F, success, failure, scope, args::Vararg{Any,N}) where {F,N} =
+    with_ordering(_with_failure, success, f, failure, scope, args...)
+@inline _with_failure(so, f::F, failure, scope, args::Vararg{Any,N}) where {F,N} =
+    with_ordering(_with_scope, failure, WithSuccessOrder(f, so), scope, args...)
+
+struct WithSuccessOrder{F,O}
+    f::F
+    success_order::O
+end
+@inline (w::WithSuccessOrder)(fo, s, args::Vararg{Any,N}) where {N} =
+    w.f(w.success_order, fo, s, args...)
+
+# A flag as a `Val`, with a branch if it isn't a constant.
+@inline flag(b::Bool) = b ? Val(true) : Val(false)
 
 @noinline throw_invalid_scope() = throw(ArgumentError(
     "invalid syncscope: expected an UnsafeAtomics.SyncScope, or one of :singlethread, " *

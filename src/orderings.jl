@@ -33,8 +33,9 @@ base_ordering(::LLVMOrdering{:acq_rel}) = :acquire_release
 # several of them or a `Symbol`, results in a branch per ordering rather than in a dynamic
 # call (which a GPU can't do). A constant ordering leaves a single branch. Comparing with `===`
 # only compares pointers, even when Julia widens the `Union` to the abstract type, whereas
-# `isa` would load the type from the object, i.e. from host memory on a GPU.
-@inline with_ordering(f, order, args...) =
+# `isa` would load the type from the object, i.e. from host memory on a GPU. (The type
+# parameters make Julia specialize on `f` and `args`, which it doesn't when only passing them.)
+@inline with_ordering(f::F, order, args::Vararg{Any,N}) where {F,N} =
     (order === monotonic || order === :monotonic) ? f(Val(:monotonic), args...) :
     (order === acquire || order === :acquire) ? f(Val(:acquire), args...) :
     (order === release || order === :release) ? f(Val(:release), args...) :
