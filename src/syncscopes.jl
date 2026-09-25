@@ -32,3 +32,6 @@ Base.print(io::IO, s::LLVMSyncScope) = print(io, string(s))
 Base.show(io::IO, o::ConcreteSyncScopes) = print(io, UnsafeAtomics, '.', llvm_syncscope(o))
 Base.show(io::IO, o::LLVMSyncScope) =
     print(io, UnsafeAtomics, ".SyncScope(", repr(llvm_syncscope(o)), ')')
+
+# The name of the syncscope for the generator, which calls the default scope `:system`.
+scope_name(s::LLVMSyncScope) = s === system ? :system : llvm_syncscope(s)
