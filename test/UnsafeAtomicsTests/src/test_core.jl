@@ -24,7 +24,7 @@ end
 
 rmw_table_for(@nospecialize T) =
     if T <: AbstractFloat
-        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (+, -))
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (+, -, max, min))
     elseif T <: AbstractBits
         ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (right,))
     else
@@ -205,6 +205,44 @@ function test_cas_single_ordering()
         end
     end
     @test occursin(r"cmpxchg .* acq_rel acquire", llvm_ir(cas_acq_rel!, Tuple{Ptr{Int32},Int32,Int32}))
+end
+
+scoped_max!(ptr, x) = UnsafeAtomics.max!(ptr, x, acq_rel, singlethread)
+
+function test_cas_loop_fallback()
+    # Operations without an atomicrmw instruction used to be a MethodError on Ptr.
+    xs = Float32[1, 2]
+    ptr = pointer(xs, 1)
+    GC.@preserve xs begin
+        @test UnsafeAtomics.modify!(ptr, max, 3f0) === (1f0 => 3f0)
+        @test UnsafeAtomics.modify!(ptr, min, -0f0, acquire) === (3f0 => -0f0)
+        @test UnsafeAtomics.modify!(ptr, max, 0f0, release, singlethread) === (-0f0 => 0f0)
+        # Julia's `max` propagates NaN, unlike LLVM's `atomicrmw fmax`.
+        @test UnsafeAtomics.modify!(ptr, max, NaN32) === (0f0 => NaN32)
+        @test xs[1] === NaN32
+        @test UnsafeAtomics.min!(ptr, 1f0) === NaN32
+        @test isnan(xs[1])
+    end
+
+    ys = Int32[3, 4]
+    ptr = pointer(ys, 1)
+    GC.@preserve ys begin
+        @test UnsafeAtomics.modify!(ptr, *, Int32(2)) === (Int32(3) => Int32(6))
+        @test UnsafeAtomics.modify!(ptr, (a, b) -> a ÷ b, Int32(4), monotonic) ===
+              (Int32(6) => Int32(1))
+        @test ys == Int32[1, 4]
+    end
+
+    bs = [false, false]
+    ptr = pointer(bs, 1)
+    GC.@preserve bs begin
+        @test UnsafeAtomics.modify!(ptr, |, true) === (false => true)
+        @test UnsafeAtomics.xor!(ptr, true, acq_rel) === true
+        @test bs == [false, false]
+    end
+
+    @test occursin(r"cmpxchg .* syncscope\(\"singlethread\"\) acq_rel monotonic",
+                   llvm_ir(scoped_max!, Tuple{Ptr{Float64},Float64}))
 end
 
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
