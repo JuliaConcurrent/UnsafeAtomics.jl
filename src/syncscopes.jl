@@ -7,7 +7,6 @@ const workgroup = LLVMSyncScope{:workgroup}()
 const device = LLVMSyncScope{:device}()
 const system = none
 
-const syncscopes = (none, singlethread)
 const ConcreteSyncScopes = Union{map(typeof, (none, singlethread, subgroup, workgroup, device))...}
 
 """

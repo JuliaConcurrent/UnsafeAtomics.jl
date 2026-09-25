@@ -339,6 +339,23 @@ function test_cpu_seq_cst_fence()
     end
 end
 
+scoped_fence(ord, scope) = (UnsafeAtomics.fence(ord, scope); nothing)
+
+function test_scoped_fences()
+    @testset for scope in filter(!=(system), SCOPES), ord in [acquire, release, acq_rel, seq_cst]
+        @test UnsafeAtomics.fence(ord, scope) === nothing
+        ir = llvm_ir(scoped_fence, Tuple{typeof(ord),typeof(scope)})
+        name = UnsafeAtomics.Internal.llvm_syncscope(scope)
+        @test occursin("fence syncscope(\"$name\") $ord", ir)
+    end
+    @testset for scope in SCOPES
+        @test UnsafeAtomics.fence(monotonic, scope) === nothing
+        @test_throws ConcurrencyViolationError UnsafeAtomics.fence(unordered, scope)
+    end
+    # the name is escaped in the IR
+    @test UnsafeAtomics.fence(acquire, SyncScope(Symbol("a\"b\\c"))) === nothing
+end
+
 function test_fence_weak_orderings()
     # `fence` requires at least `acquire`. The intrinsic accepts `monotonic` and turns
     # it into a no-op, but rejects `unordered`; preserve both behaviors in the fallback.

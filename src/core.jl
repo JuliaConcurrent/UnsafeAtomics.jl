@@ -294,60 +294,35 @@ else
         """, Cvoid, Tuple{})
 end
 
-for sync in syncscopes
-    if sync == none
-        if !FENCE_INTRINSIC_ELIDABLE
-            # Core.Intrinsics.atomic_fence was introduced in 1.10
-            if VERSION < v"1.14.0-DEV.1371"
-                @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
-                    Core.Intrinsics.atomic_fence(base_ordering(ord))
-                    return nothing
-                end
-            else
-                @eval function UnsafeAtomics.fence(ord::Ordering, ::$(typeof(sync)))
-                    Core.Intrinsics.atomic_fence(base_ordering(ord), :system)
-                    return nothing
-                end
-            end
-        else
-            # Inference treats `llvmcall` conservatively, so the fence is retained.
-            for ord in orderings
-                if ord === monotonic
-                    # `fence` requires at least `acquire`; the intrinsic accepts
-                    # `:monotonic` and codegen turns it into a no-op.
-                    @eval UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync))) = nothing
-                elseif ord === unordered
-                    # defined below
-                elseif ord === seq_cst && X86_FENCE_WORKAROUND
-                    # defined by the x86_64 special case below
-                else
-                    @eval function UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync)))
-                        return llvmcall(
-                            $("""
-                            fence $ord
-                            ret void
-                            """),
-                            Cvoid,
-                            Tuple{},
-                        )
-                    end
-                end
-            end
-        end
-        # A fence can't be unordered. Throw the intrinsic's error ourselves: Julia's
-        # inference thinks the intrinsic throws another type of exception, which Julia 1.11
-        # miscompiles when the error is caught. A call that always throws can't be elided.
-        @eval UnsafeAtomics.fence(::typeof(unordered), ::$(typeof(sync))) =
-            throw_invalid_ordering()
-        if X86_FENCE_WORKAROUND
-            @eval UnsafeAtomics.fence(::typeof(seq_cst), ::$(typeof(sync))) = cpu_seq_cst_fence()
+if !FENCE_INTRINSIC_ELIDABLE
+    # Core.Intrinsics.atomic_fence was introduced in 1.10
+    if VERSION < v"1.14.0-DEV.1371"
+        function UnsafeAtomics.fence(ord::Ordering, ::typeof(none))
+            Core.Intrinsics.atomic_fence(base_ordering(ord))
+            return nothing
         end
     else
-        for ord in orderings
-            @eval function UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync)))
+        function UnsafeAtomics.fence(ord::Ordering, ::typeof(none))
+            Core.Intrinsics.atomic_fence(base_ordering(ord), :system)
+            return nothing
+        end
+    end
+else
+    # Inference treats `llvmcall` conservatively, so the fence is retained.
+    for ord in orderings
+        if ord === monotonic
+            # `fence` requires at least `acquire`; the intrinsic accepts
+            # `:monotonic` and codegen turns it into a no-op.
+            @eval UnsafeAtomics.fence(::$(typeof(ord)), ::typeof(none)) = nothing
+        elseif ord === unordered
+            # defined below
+        elseif ord === seq_cst && X86_FENCE_WORKAROUND
+            # defined by the x86_64 special case below
+        else
+            @eval function UnsafeAtomics.fence(::$(typeof(ord)), ::typeof(none))
                 return llvmcall(
                     $("""
-                    fence $sync $ord
+                    fence $ord
                     ret void
                     """),
                     Cvoid,
@@ -356,6 +331,27 @@ for sync in syncscopes
             end
         end
     end
+end
+# A fence can't be unordered. Throw the intrinsic's error ourselves: Julia's inference thinks
+# the intrinsic throws another type of exception, which Julia 1.11 miscompiles when the error
+# is caught. A call that always throws can't be elided.
+UnsafeAtomics.fence(::typeof(unordered), ::typeof(none)) = throw_invalid_ordering()
+if X86_FENCE_WORKAROUND
+    UnsafeAtomics.fence(::typeof(seq_cst), ::typeof(none)) = cpu_seq_cst_fence()
+end
+
+# Fences in other scopes. Like for the system scope, `monotonic` is a no-op and `unordered`
+# is invalid, as `fence` requires at least `acquire`.
+UnsafeAtomics.fence(ord::Ordering, sync::LLVMSyncScope) = llvm_fence(ord, sync)
+
+@generated function llvm_fence(::LLVMOrdering{ord}, ::LLVMSyncScope{sync}) where {ord,sync}
+    ord === :monotonic && return :(nothing)
+    ord === :unordered && return :(throw_invalid_ordering())
+    ir = """
+        fence $(LLVMSyncScope{sync}()) $ord
+        ret void
+        """
+    return :(llvmcall($ir, Cvoid, Tuple{}))
 end
 
 as_native_uint(::Type{T}) where {T} =
