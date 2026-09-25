@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches:
-      - master
+      - main
     tags: '*'
   pull_request:
 
@@ -16,7 +16,7 @@ jobs:
           - 'lts'
           - '1.11'
           - '1.12'
-          - '1.13-nightly'
+          - '1.13'
           - 'nightly'
       fail-fast: false
     name: Test Julia ${{ matrix.julia-version }}
