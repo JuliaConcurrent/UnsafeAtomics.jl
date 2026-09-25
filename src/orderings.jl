@@ -22,8 +22,13 @@ base_ordering(::LLVMOrdering{name}) where {name} = name
 base_ordering(::LLVMOrdering{:seq_cst}) = :sequentially_consistent
 base_ordering(::LLVMOrdering{:acq_rel}) = :acquire_release
 
-# The failure ordering of a cmpxchg can't release. Derive it from the success ordering
-# like C++ does.
+"""
+    UnsafeAtomics.failure_order(order)
+
+The failure ordering of `cas!` for the success ordering `order`, unless another one is passed.
+Like in C++, it's `order` without its release part, as a failure ordering can't release:
+`monotonic` for `release`, `acquire` for `acq_rel`, and `order` otherwise.
+"""
 @inline failure_order(order) =
     (order === release || order === :release) ? monotonic :
     (order === acq_rel || order === :acq_rel || order === :acquire_release) ? acquire : order

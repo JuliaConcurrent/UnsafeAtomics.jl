@@ -33,6 +33,16 @@ Base.show(io::IO, o::ConcreteSyncScopes) = print(io, UnsafeAtomics, '.', llvm_sy
 Base.show(io::IO, o::LLVMSyncScope) =
     print(io, UnsafeAtomics, ".SyncScope(", repr(llvm_syncscope(o)), ')')
 
+"""
+    UnsafeAtomics.default_scope(ptr)
+
+The syncscope of atomic operations on `ptr` unless another one is passed: `system` for a
+`Ptr`, and `device` for a `Core.LLVMPtr`, which is how GPU memory is usually accessed. On
+CPUs, every scope other than `singlethread` is the system scope.
+"""
+default_scope(::Ptr) = system
+default_scope(::LLVMPtr) = device
+
 # The name of the syncscope for the generator, which calls the default scope `:system`.
 scope_name(s::LLVMSyncScope) = s === system ? :system : llvm_syncscope(s)
 

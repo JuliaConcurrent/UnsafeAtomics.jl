@@ -450,6 +450,28 @@ function test_native_rmw()
     @test native_rmw((a, b) -> a + b, Int32) === nothing
 end
 
+default_load(ptr) = UnsafeAtomics.load(ptr)
+default_store!(ptr, x) = UnsafeAtomics.store!(ptr, x, release)
+default_cas!(ptr, cmp, new) = UnsafeAtomics.cas!(ptr, cmp, new)
+default_add!(ptr, x) = UnsafeAtomics.add!(ptr, x)
+default_modify!(ptr, x) = UnsafeAtomics.modify!(ptr, *, x, acquire)
+
+function test_default_scope()
+    @test UnsafeAtomics.default_scope(Ptr{Int}(0)) === system
+    @test UnsafeAtomics.default_scope(reinterpret(Core.LLVMPtr{Int,1}, 0)) === device
+    # GPU memory is accessed through LLVMPtr: use the device scope rather than the system one
+    @testset for P in [Ptr{Int32}, Core.LLVMPtr{Int32,0}, Core.LLVMPtr{Int32,1}]
+        scope = P <: Ptr ? system : device
+        @test scoped_instruction(llvm_ir(default_load, Tuple{P}), r"load atomic .* seq_cst", scope)
+        @test scoped_instruction(llvm_ir(default_store!, Tuple{P,Int32}), r"store atomic .* release", scope)
+        @test scoped_instruction(llvm_ir(default_cas!, Tuple{P,Int32,Int32}), r"cmpxchg .* seq_cst seq_cst", scope)
+        @test scoped_instruction(llvm_ir(default_add!, Tuple{P,Int32}), r"atomicrmw add .* seq_cst", scope)
+        ir = llvm_ir(default_modify!, Tuple{P,Int32})
+        @test all(line -> occursin("syncscope(\"device\")", line) == (scope === device),
+                  filter(contains(r"load atomic i32|cmpxchg"), split(ir, '\n')))
+    end
+end
+
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
 barrier_release() = (UnsafeAtomics.fence(release); nothing)
 barrier_acq_rel() = (UnsafeAtomics.fence(acq_rel); nothing)
