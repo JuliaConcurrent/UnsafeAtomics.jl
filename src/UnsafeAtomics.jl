@@ -70,6 +70,9 @@ const workgroup = Internal.workgroup
 const device = Internal.device
 const system = Internal.system
 
+const default_scope = Internal.default_scope
+const failure_order = Internal.failure_order
+
 Internal.declare_public(
     UnsafeAtomics,
     :Ordering, :SyncScope,
@@ -80,6 +83,7 @@ Internal.declare_public(
     :unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cst,
     :acquire_release, :sequentially_consistent,
     :none, :singlethread, :subgroup, :workgroup, :device, :system,
+    :default_scope, :failure_order,
 )
 
 end  # baremodule UnsafeAtomics

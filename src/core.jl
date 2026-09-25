@@ -174,7 +174,7 @@ end
 @inline UnsafeAtomics.load(
     ptr::AnyPtr{T},
     order = seq_cst,
-    scope = system;
+    scope = default_scope(ptr);
     volatile::Bool = false,
     align::Integer = sizeof(T),
 ) where {T} =
@@ -184,7 +184,7 @@ end
     ptr::AnyPtr{T},
     x::T,
     order = seq_cst,
-    scope = system;
+    scope = default_scope(ptr);
     volatile::Bool = false,
     align::Integer = sizeof(T),
 ) where {T} =
@@ -197,7 +197,7 @@ end
     new::T,
     success = seq_cst,
     failure = failure_order(success),
-    scope = system;
+    scope = default_scope(ptr);
     weak::Bool = false,
     volatile::Bool = false,
     align::Integer = sizeof(T),
@@ -210,7 +210,7 @@ end
     op::OP,
     x::T,
     order = seq_cst,
-    scope = system;
+    scope = default_scope(ptr);
     volatile::Bool = false,
     align::Integer = sizeof(T),
 ) where {T,OP} =
@@ -223,7 +223,7 @@ for (op, rmwop) in OP_RMW_TABLE
         ptr::AnyPtr{T},
         x::T,
         order = seq_cst,
-        scope = system;
+        scope = default_scope(ptr);
         volatile::Bool = false,
         align::Integer = sizeof(T),
     ) where {T} =
