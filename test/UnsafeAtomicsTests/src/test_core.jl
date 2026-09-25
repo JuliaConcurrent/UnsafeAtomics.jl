@@ -300,10 +300,15 @@ function test_cpu_seq_cst_fence()
     @test occursin(r"^\s*fence seq_cst"m, llvm_ir(hook, Tuple{})) ||
           occursin("asm sideeffect", llvm_ir(hook, Tuple{}))
 
-    # The x86_64 inline assembly must only be reachable through the hook.
+    # The x86_64 inline assembly must only be reachable through the hook, and only
+    # before LLVM 20, which emits the same instruction for a plain fence.
     src, _ = only(code_typed(UnsafeAtomics.fence, Tuple{typeof(seq_cst),typeof(none)};
                              optimize = false))
-    @test occursin("cpu_seq_cst_fence", string(src)) == (Sys.ARCH === :x86_64)
+    @test occursin("cpu_seq_cst_fence", string(src)) ==
+          (Sys.ARCH === :x86_64 && Base.libllvm_version < v"20")
+    if Base.libllvm_version >= v"20"
+        @test !occursin("asm sideeffect", llvm_ir(barrier_seq_cst, Tuple{}))
+    end
 end
 
 function test_fence_weak_orderings()
