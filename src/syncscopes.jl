@@ -35,3 +35,16 @@ Base.show(io::IO, o::LLVMSyncScope) =
 
 # The name of the syncscope for the generator, which calls the default scope `:system`.
 scope_name(s::LLVMSyncScope) = s === system ? :system : llvm_syncscope(s)
+
+# The name of the scope, as a `Val` for the generator. The canonical scopes can also be passed
+# as a `Symbol`. Like orderings, scopes have to be constants.
+@inline scope_val(scope::LLVMSyncScope) = Val(scope_name(scope))
+@inline scope_val(scope::Symbol) =
+    (scope === :system || scope === :device || scope === :workgroup || scope === :subgroup ||
+     scope === :singlethread) ? Val(scope) : throw_invalid_scope()
+scope_val(@nospecialize(scope)) = throw_invalid_scope()
+
+# One literal: building the message at run time would allocate a string, which GPU code can't.
+@noinline throw_invalid_scope() = throw(ArgumentError(
+    "invalid syncscope: expected an UnsafeAtomics.SyncScope, or one of :singlethread, \
+     :subgroup, :workgroup, :device or :system"))
