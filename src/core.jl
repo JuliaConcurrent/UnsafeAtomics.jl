@@ -264,6 +264,9 @@ const FENCE_INTRINSIC_ELIDABLE =
         true
     end
 
+@noinline throw_invalid_ordering() =
+    throw(Base.ConcurrencyViolationError("invalid atomic ordering"))
+
 for sync in syncscopes
     if sync == none
         if !FENCE_INTRINSIC_ELIDABLE
@@ -287,10 +290,7 @@ for sync in syncscopes
                     # `:monotonic` and codegen turns it into a no-op.
                     @eval UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync))) = nothing
                 elseif ord === unordered
-                    # The intrinsic rejects `:unordered`; keep raising the identical
-                    # error. A call that always throws cannot be wrongly elided.
-                    @eval UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync))) =
-                        Core.Intrinsics.atomic_fence($(QuoteNode(base_ordering(ord))))
+                    # defined below
                 elseif ord === seq_cst && Sys.ARCH == :x86_64
                     # defined by the x86_64 special case below
                 else
@@ -307,6 +307,11 @@ for sync in syncscopes
                 end
             end
         end
+        # A fence can't be unordered. Throw the intrinsic's error ourselves: Julia's
+        # inference thinks the intrinsic throws another type of exception, which Julia 1.11
+        # miscompiles when the error is caught. A call that always throws can't be elided.
+        @eval UnsafeAtomics.fence(::typeof(unordered), ::$(typeof(sync))) =
+            throw_invalid_ordering()
         if Sys.ARCH == :x86_64
             # FIXME: Disable this once on LLVM 19
             # This is unfortunatly required for good-performance on AMD
