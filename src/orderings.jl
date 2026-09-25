@@ -21,3 +21,9 @@ Base.show(io::IO, o::ConcreteOrdering) = print(io, UnsafeAtomics, '.', llvm_orde
 base_ordering(::LLVMOrdering{name}) where {name} = name
 base_ordering(::LLVMOrdering{:seq_cst}) = :sequentially_consistent
 base_ordering(::LLVMOrdering{:acq_rel}) = :acquire_release
+
+# The failure ordering of a cmpxchg can't release. Derive it from the success ordering
+# like C++ does.
+failure_order(::typeof(release)) = monotonic
+failure_order(::typeof(acq_rel)) = acquire
+failure_order(order) = order
