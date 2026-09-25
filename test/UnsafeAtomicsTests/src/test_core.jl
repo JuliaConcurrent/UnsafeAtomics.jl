@@ -472,6 +472,43 @@ function test_default_scope()
     end
 end
 
+function test_contention()
+    # in another process, as this one may only have one thread
+    code = """
+    using UnsafeAtomics
+    const UA = UnsafeAtomics
+    ints = zeros(Int, 1); floats = zeros(Float64, 1); small = zeros(Int16, 1); bools = [false]
+    n = 2_000 * Threads.nthreads()
+    GC.@preserve ints floats small bools begin
+        Threads.@threads for i in 1:n
+            UA.add!(pointer(ints), 1)                                       # atomicrmw
+            UA.modify!(pointer(floats), (a, b) -> a + b, 1.0, UA.acq_rel)   # CAS loop
+            UA.max!(pointer(small), Int16(i % 1000), UA.monotonic)
+            UA.xor!(pointer(bools), true, UA.monotonic, :workgroup)
+            UA.fence(:seq_cst)
+        end
+    end
+    print(Threads.nthreads(), " ", ints[1] == n, " ", floats[1] == n, " ", small[1] == 999, " ",
+          bools[1] == isodd(n))
+    """
+    cmd = `$(Base.julia_cmd()) --startup-file=no --threads=4 --project=$(Base.active_project()) -e $code`
+    @test readchomp(addenv(cmd, "JULIA_LOAD_PATH" => join(LOAD_PATH, Sys.iswindows() ? ';' : ':'))) ==
+          "4 true true true true"
+end
+
+function test_zero_size_values()
+    xs = [nothing, nothing]
+    GC.@preserve xs begin
+        ptr = pointer(xs)
+        @test UnsafeAtomics.load(ptr, acquire) === nothing
+        @test UnsafeAtomics.store!(ptr, nothing, release, workgroup) === nothing
+        @test UnsafeAtomics.xchg!(ptr, nothing) === nothing
+        @test UnsafeAtomics.modify!(ptr, right, nothing) === (nothing => nothing)
+        @test UnsafeAtomics.cas!(ptr, nothing, nothing) === (old = nothing, success = true)
+        @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, release)
+    end
+end
+
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
 barrier_release() = (UnsafeAtomics.fence(release); nothing)
 barrier_acq_rel() = (UnsafeAtomics.fence(acq_rel); nothing)
