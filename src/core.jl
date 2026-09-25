@@ -21,6 +21,10 @@ const OP_RMW_TABLE = [
     min => :min,
     UnsafeAtomics.fmax => :fmax,
     UnsafeAtomics.fmin => :fmin,
+    UnsafeAtomics.inc_wrap => :inc_wrap,
+    UnsafeAtomics.dec_wrap => :dec_wrap,
+    UnsafeAtomics.sub_cond => :sub_cond,
+    UnsafeAtomics.sub_sat => :sub_sat,
 ]
 
 const FMAX_DOC = """
@@ -37,6 +41,40 @@ version.
     isnan(x) ? y : isnan(y) ? x : max(x, y)
 @doc FMAX_DOC UnsafeAtomics.fmin(x::T, y::T) where {T<:AbstractFloat} =
     isnan(x) ? y : isnan(y) ? x : min(x, y)
+
+"""
+    UnsafeAtomics.inc_wrap(old, x)
+
+`old + 1`, wrapping around to zero past `x`: `old >= x ? 0 : old + 1`, for unsigned
+integers. `modify!` and `inc_wrap!` use `atomicrmw uinc_wrap` for it from LLVM 22 (Julia 1.14).
+"""
+UnsafeAtomics.inc_wrap(old::T, x::T) where {T<:Unsigned} = old >= x ? zero(T) : old + one(T)
+
+"""
+    UnsafeAtomics.dec_wrap(old, x)
+
+`old - 1`, wrapping around to `x` at zero or above `x`: `(old == 0 || old > x) ? x : old - 1`,
+for unsigned integers. `modify!` and `dec_wrap!` use `atomicrmw udec_wrap` for it from LLVM 22
+(Julia 1.14).
+"""
+UnsafeAtomics.dec_wrap(old::T, x::T) where {T<:Unsigned} =
+    (iszero(old) || old > x) ? x : old - one(T)
+
+"""
+    UnsafeAtomics.sub_cond(old, x)
+
+`old - x` if that doesn't wrap around, `old` otherwise, for unsigned integers. `modify!` and
+`sub_cond!` use `atomicrmw usub_cond` for it from LLVM 22 (Julia 1.14).
+"""
+UnsafeAtomics.sub_cond(old::T, x::T) where {T<:Unsigned} = old >= x ? old - x : old
+
+"""
+    UnsafeAtomics.sub_sat(old, x)
+
+`old - x`, saturating at zero, for unsigned integers. `modify!` and `sub_sat!` use
+`atomicrmw usub_sat` for it from LLVM 22 (Julia 1.14).
+"""
+UnsafeAtomics.sub_sat(old::T, x::T) where {T<:Unsigned} = old >= x ? old - x : zero(T)
 
 # Before JuliaLang/julia#57806, inference modeled `Core.Intrinsics.atomic_fence` as
 # effect-free, so a fence inlined through the public wrapper could be deleted when its

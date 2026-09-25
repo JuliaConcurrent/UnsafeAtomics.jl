@@ -336,6 +336,13 @@ function native_rmw(@nospecialize(op), @nospecialize(T))
     elseif op === UnsafeAtomics.fmin
         return float ? :fmin : nothing
     end
+    # LLVM parses these from version 16 or 20, but before LLVM 22 the AArch64 back-end can't
+    # compile them. Back-ends for targets that can use `llvm_rmw!` directly.
+    rmw = op === UnsafeAtomics.inc_wrap ? :uinc_wrap :
+          op === UnsafeAtomics.dec_wrap ? :udec_wrap :
+          op === UnsafeAtomics.sub_cond ? :usub_cond :
+          op === UnsafeAtomics.sub_sat ? :usub_sat : nothing
+    rmw !== nothing && T <: Base.BitUnsigned && Base.libllvm_version >= v"22" && return rmw
     return nothing
 end
 

@@ -28,10 +28,16 @@ rmw_table_for(@nospecialize T) =
          if op in (+, -, max, min, UnsafeAtomics.fmax, UnsafeAtomics.fmin))
     elseif T <: AbstractBits
         ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (right,))
-    else
+    elseif T <: Unsigned
         ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE
          if !(op in (UnsafeAtomics.fmax, UnsafeAtomics.fmin)))
+    else
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if !(op in FLOAT_OPS || op in UNSIGNED_OPS))
     end
+
+const FLOAT_OPS = (UnsafeAtomics.fmax, UnsafeAtomics.fmin)
+const UNSIGNED_OPS = (UnsafeAtomics.inc_wrap, UnsafeAtomics.dec_wrap, UnsafeAtomics.sub_cond,
+                      UnsafeAtomics.sub_sat)
 
 function test_default_ordering(T::Type)
     xs = T[rand(T), rand(T)]
@@ -348,6 +354,100 @@ function test_float_minmax()
         @test occursin("cmpxchg", ir(max)) && !occursin("atomicrmw", ir(max))
         @test occursin("cmpxchg", ir(min)) && !occursin("atomicrmw", ir(min))
     end
+end
+
+wrap_modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, monotonic, device)
+
+function test_unsigned_ops()
+    UA = UnsafeAtomics
+    # the semantics of the LLVM instructions
+    @test UA.inc_wrap(0x03, 0x05) === 0x04
+    @test UA.inc_wrap(0x05, 0x05) === 0x00
+    @test UA.inc_wrap(0x07, 0x05) === 0x00
+    @test UA.dec_wrap(0x03, 0x05) === 0x02
+    @test UA.dec_wrap(0x00, 0x05) === 0x05
+    @test UA.dec_wrap(0x07, 0x05) === 0x05
+    @test UA.sub_cond(0x07, 0x05) === 0x02
+    @test UA.sub_cond(0x03, 0x05) === 0x03
+    @test UA.sub_sat(0x07, 0x05) === 0x02
+    @test UA.sub_sat(0x03, 0x05) === 0x00
+    @test_throws MethodError UA.inc_wrap(1, 2)
+
+    @testset for T in [UInt8, UInt32, UInt64], i in 1:2
+        xs = T[3, 0]
+        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        GC.@preserve xs begin
+            @test UA.inc_wrap!(ptr, T(4)) === T(3)
+            @test UA.inc_wrap!(ptr, T(4), acquire) === T(4)
+            @test UA.dec_wrap!(ptr, T(4), release, device) === T(0)
+            @test UA.modify!(ptr, UA.dec_wrap, T(4)) === (T(4) => T(3))
+            @test UA.sub_cond!(ptr, T(5)) === T(3)
+            @test UA.modify!(ptr, UA.sub_cond, T(2)) === (T(3) => T(1))
+            @test UA.sub_sat!(ptr, T(2)) === T(1)
+            @test UA.modify!(ptr, UA.sub_sat, T(1), seq_cst, singlethread) === (T(0) => T(0))
+            @test xs == T[0, 0]
+        end
+    end
+
+    # native from the LLVM version that has the instruction; a compare-and-swap loop before
+    P = Core.LLVMPtr{UInt32,1}
+    for (op, rmw, version) in ((UA.inc_wrap, "uinc_wrap", v"22"), (UA.dec_wrap, "udec_wrap", v"22"),
+                               (UA.sub_cond, "usub_cond", v"22"), (UA.sub_sat, "usub_sat", v"22"))
+        ir = llvm_ir(wrap_modify!, Tuple{P,typeof(op),UInt32})
+        if Base.libllvm_version >= version
+            @test occursin("atomicrmw $rmw", ir)
+        else
+            @test occursin("cmpxchg", ir) && !occursin("atomicrmw", ir)
+        end
+    end
+end
+
+function test_native_rmw()
+    # which operations have an atomicrmw instruction, on this version of LLVM
+    UA = UnsafeAtomics
+    native_rmw = UA.Internal.native_rmw
+    llvm = Base.libllvm_version
+    bf16 = isdefined(Core, :BFloat16) ? (Core.BFloat16,) : ()
+    for T in (Int8, Int32, Int64), (op, rmw) in ((+, :add), (-, :sub), (&, :and), (|, :or),
+                                                 (xor, :xor), (⊼, :nand), (max, :max),
+                                                 (min, :min), (right, :xchg))
+        @test native_rmw(op, T) === rmw
+    end
+    for T in (UInt8, UInt64)
+        @test native_rmw(max, T) === :umax
+        @test native_rmw(min, T) === :umin
+        @test native_rmw(UA.inc_wrap, T) === (llvm >= v"22" ? :uinc_wrap : nothing)
+        @test native_rmw(UA.dec_wrap, T) === (llvm >= v"22" ? :udec_wrap : nothing)
+        @test native_rmw(UA.sub_cond, T) === (llvm >= v"22" ? :usub_cond : nothing)
+        @test native_rmw(UA.sub_sat, T) === (llvm >= v"22" ? :usub_sat : nothing)
+    end
+    @test native_rmw(UA.inc_wrap, Int32) === nothing
+    for T in bf16
+        # the AArch64 back-end can't compile these before LLVM 20
+        @test native_rmw(+, T) === (llvm >= v"20" ? :fadd : nothing)
+        @test native_rmw(UA.fmax, T) === (llvm >= v"20" ? :fmax : nothing)
+        @test native_rmw(right, T) === :xchg
+    end
+    for T in (Float16, Float32, Float64)
+        @test native_rmw(+, T) === :fadd
+        @test native_rmw(-, T) === :fsub
+        @test native_rmw(UA.fmax, T) === :fmax
+        @test native_rmw(UA.fmin, T) === :fmin
+        @test native_rmw(max, T) === (llvm >= v"21" ? :fmaximum : nothing)
+        @test native_rmw(min, T) === (llvm >= v"21" ? :fminimum : nothing)
+        @test native_rmw(right, T) === :xchg
+        @test native_rmw(&, T) === nothing
+    end
+    @test native_rmw(|, Bool) === :or
+    @test native_rmw(max, Bool) === :umax
+    @test native_rmw(⊼, Bool) === nothing  # a bitwise nand of Bools isn't a Bool
+    @test native_rmw(+, Bool) === nothing
+    @test native_rmw(right, Ptr{Cvoid}) === :xchg
+    @test native_rmw(+, Ptr{Cvoid}) === nothing
+    @test native_rmw(right, Core.LLVMPtr{Cvoid,1}) === :xchg
+    @test native_rmw(right, Nothing) === :xchg
+    @test native_rmw(*, Int32) === nothing
+    @test native_rmw((a, b) -> a + b, Int32) === nothing
 end
 
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
