@@ -6,8 +6,8 @@
 
 @inline UnsafeAtomics.load(x, ord) = UnsafeAtomics.load(x, ord, none)
 @inline UnsafeAtomics.store!(x, v, ord) = UnsafeAtomics.store!(x, v, ord, none)
-@inline UnsafeAtomics.cas!(x, cmp, new, ord) = UnsafeAtomics.cas!(x, cmp, new, ord, ord, none)
-@inline UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_order) = UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_order, none)
+@inline UnsafeAtomics.cas!(x, cmp, new, ord) = UnsafeAtomics.cas!(x, cmp, new, ord, failure_order(ord), none)
+@inline UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_ord) = UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_ord, none)
 @inline UnsafeAtomics.modify!(ptr, op, x, ord) = UnsafeAtomics.modify!(ptr, op, x, ord, none)
 @inline UnsafeAtomics.fence(ord) = UnsafeAtomics.fence(ord, none)
 

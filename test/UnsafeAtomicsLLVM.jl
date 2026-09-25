@@ -108,6 +108,20 @@ end
         test_explicit_ordering(T)
     end
 
+    @testset "cas! with a single ordering" begin
+        @testset for ord in [UnsafeAtomics.monotonic, acquire, release, acq_rel, seq_cst]
+            xs = Int32[1, 2]
+            ptr = llvmptr(xs, 1)
+            GC.@preserve xs begin
+                @test UnsafeAtomics.cas!(ptr, Int32(1), Int32(3), ord) ===
+                      (old = Int32(1), success = true)
+                @test UnsafeAtomics.cas!(ptr, Int32(1), Int32(4), ord) ===
+                      (old = Int32(3), success = false)
+                @test xs[1] === Int32(3)
+            end
+        end
+    end
+
     @testset "Zero-sized types" begin
         @test sizeof(Nothing) == 0
         check_default_ordering([nothing, nothing], nothing, nothing)

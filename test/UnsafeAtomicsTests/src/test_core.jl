@@ -181,6 +181,32 @@ function test_unsupported_arguments()
     end
 end
 
+function test_failure_order()
+    failure_order = UnsafeAtomics.Internal.failure_order
+    @test failure_order(monotonic) === monotonic
+    @test failure_order(acquire) === acquire
+    @test failure_order(release) === monotonic
+    @test failure_order(acq_rel) === acquire
+    @test failure_order(seq_cst) === seq_cst
+end
+
+cas_acq_rel!(ptr, cmp, new) = UnsafeAtomics.cas!(ptr, cmp, new, acq_rel)
+
+function test_cas_single_ordering()
+    # A single ordering used to be taken as the failure ordering as well, which is
+    # invalid for release and acq_rel.
+    @testset for T in [Int32, Float64], ord in [monotonic, acquire, release, acq_rel, seq_cst]
+        xs = T[1, 2]
+        ptr = pointer(xs, 1)
+        GC.@preserve xs begin
+            @test UnsafeAtomics.cas!(ptr, T(1), T(3), ord) === (old = T(1), success = true)
+            @test UnsafeAtomics.cas!(ptr, T(1), T(4), ord) === (old = T(3), success = false)
+            @test xs[1] === T(3)
+        end
+    end
+    @test occursin(r"cmpxchg .* acq_rel acquire", llvm_ir(cas_acq_rel!, Tuple{Ptr{Int32},Int32,Int32}))
+end
+
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
 barrier_release() = (UnsafeAtomics.fence(release); nothing)
 barrier_acq_rel() = (UnsafeAtomics.fence(acq_rel); nothing)
