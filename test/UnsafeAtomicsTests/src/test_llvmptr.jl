@@ -9,7 +9,8 @@ using Base: ConcurrencyViolationError
 
 # the operations that apply to integers
 const INT_RMW_TABLE = [(op, name) for (op, name) in OP_RMW_TABLE
-                       if !(op in (UnsafeAtomics.fmax, UnsafeAtomics.fmin))]
+                       if !(op in (UnsafeAtomics.fmax, UnsafeAtomics.fmin, UnsafeAtomics.inc_wrap,
+                                   UnsafeAtomics.dec_wrap, UnsafeAtomics.sub_cond, UnsafeAtomics.sub_sat))]
 
 llvmptr(xs::Array, i) = reinterpret(Core.LLVMPtr{eltype(xs),0}, pointer(xs, i))
 
