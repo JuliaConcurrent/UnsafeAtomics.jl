@@ -38,7 +38,8 @@ const HAS_BFLOAT16 = isdefined(Core, :BFloat16)
 is_ieee_float(T) =
     T === Float16 || T === Float32 || T === Float64 || (HAS_BFLOAT16 && T === Core.BFloat16)
 
-# Like Base, only use 128-bit atomics where they are known to work.
+# Like Base, only use 128-bit atomics where they are known to work
+# (https://github.com/JuliaLang/julia/blob/v1.6.3/base/atomics.jl#L23-L30).
 const ATOMIC_SIZES =
     if Sys.ARCH == :i686 || startswith(string(Sys.ARCH), "arm") ||
        Sys.ARCH === :powerpc64le || Sys.ARCH === :ppc64le
@@ -76,6 +77,18 @@ function pointer_argument(::Type{P}, lt) where {P}
 end
 
 normalize_order(o) = o === :acquire_release ? :acq_rel : o === :sequentially_consistent ? :seq_cst : o
+julia_order(o) = o === :acq_rel ? :acquire_release : o === :seq_cst ? :sequentially_consistent : o
+order_strength(o) = findfirst(==(o), (:unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cst))
+
+# Julia's pointer intrinsics only take 8 bytes before 1.12, and on 32-bit platforms.
+const MAX_POINTERATOMIC_SIZE = VERSION >= v"1.12.0-DEV.161" && Int == Int64 ? 16 : 8
+
+# Atomics on Ptr in the system scope keep using Julia's intrinsics where those can express
+# them: they compile to the same instruction, but Julia's compiler knows what they do.
+use_intrinsics(P, T, scope, volatile, align, md) =
+    P <: Ptr && scope === :system && !volatile && align == sizeof(T) && md === () &&
+    (T <: Base.BitInteger || T === Float16 || T === Float32 || T === Float64) &&
+    sizeof(T) <= MAX_POINTERATOMIC_SIZE
 
 const LOAD_ORDERS = (:unordered, :monotonic, :acquire, :seq_cst)
 const STORE_ORDERS = (:unordered, :monotonic, :release, :seq_cst)
@@ -173,6 +186,8 @@ function load_ir(P, T, order, scope, volatile, align, md)
     check_access(T, align, volatile)
     S, MD = syncscope_string(scope), metadata_string(md)
     is_zero_size(T) && return :($(fence_for(o, scope, md)); $(T.instance))
+    use_intrinsics(P, T, scope, volatile, align, md) &&
+        return :(Core.Intrinsics.atomic_pointerref(ptr, $(QuoteNode(julia_order(o)))))
     lt = llvm_type(T)
     setup, pt, p = pointer_argument(P, lt)
     ir = """
@@ -188,6 +203,8 @@ function store_ir(P, T, order, scope, volatile, align, md)
     check_access(T, align, volatile)
     S, MD = syncscope_string(scope), metadata_string(md)
     is_zero_size(T) && return :($(fence_for(o, scope, md)); nothing)
+    use_intrinsics(P, T, scope, volatile, align, md) &&
+        return :(Core.Intrinsics.atomic_pointerset(ptr, x, $(QuoteNode(julia_order(o)))); nothing)
     lt = llvm_type(T)
     setup, pt, p = pointer_argument(P, lt)
     ir = """
@@ -226,6 +243,12 @@ function cmpxchg_ir(P, T, success_order, failure_order, scope, weak, volatile, a
     S, MD = syncscope_string(scope), metadata_string(md)
     is_zero_size(T) &&
         return :($(fence_for(so, scope, md)); (old = $(T.instance), success = true))
+    # the intrinsic is strong, and rejects a failure ordering stronger than the success one
+    if !weak && use_intrinsics(P, T, scope, volatile, align, md) &&
+       order_strength(fo) <= order_strength(so)
+        return :(Core.Intrinsics.atomic_pointerreplace(
+            ptr, cmp, new, $(QuoteNode(julia_order(so))), $(QuoteNode(julia_order(fo)))))
+    end
     lt = llvm_type(T)
     # cmpxchg only takes integers and pointers
     ct = is_ieee_float(T) ? "i$(8 * sizeof(T))" : lt

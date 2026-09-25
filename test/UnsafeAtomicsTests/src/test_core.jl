@@ -204,10 +204,10 @@ function test_unsupported_arguments()
                 ptr, T(1), T(3), unordered, monotonic)
             @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(
                 ptr, T(1), T(3), seq_cst, release)
-            @test_throws ArgumentError UnsafeAtomics.load(ptr, monotonic, unsupported_scope)
-            @test_throws ArgumentError UnsafeAtomics.store!(
+            @test_throws MethodError UnsafeAtomics.load(ptr, monotonic, unsupported_scope)
+            @test_throws MethodError UnsafeAtomics.store!(
                 ptr, T(3), monotonic, unsupported_scope)
-            @test_throws ArgumentError UnsafeAtomics.cas!(
+            @test_throws MethodError UnsafeAtomics.cas!(
                 ptr, T(1), T(3), monotonic, monotonic, unsupported_scope)
             @test xs == T[1, 2]
         end
@@ -257,7 +257,7 @@ function test_cas_single_ordering()
     @test occursin(r"cmpxchg .* acq_rel acquire", llvm_ir(cas_acq_rel!, Tuple{Ptr{Int32},Int32,Int32}))
 end
 
-scoped_max!(ptr, x) = UnsafeAtomics.max!(ptr, x, acq_rel, singlethread)
+scoped_mul!(ptr, x) = UnsafeAtomics.modify!(ptr, *, x, acq_rel, singlethread)
 
 function test_cas_loop_fallback()
     # Operations without an atomicrmw instruction used to be a MethodError on Ptr.
@@ -292,7 +292,7 @@ function test_cas_loop_fallback()
     end
 
     @test occursin(r"cmpxchg .* syncscope\(\"singlethread\"\) acq_rel monotonic",
-                   llvm_ir(scoped_max!, Tuple{Ptr{Float64},Float64}))
+                   llvm_ir(scoped_mul!, Tuple{Ptr{Float64},Float64}))
 end
 
 float_modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, monotonic, device)

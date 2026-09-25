@@ -170,6 +170,9 @@ function test_ir()
         al = sizeof(T)
         pt(t) = ir_pointer(A, t) * " %"
         for (s, v) in ((:system, false), (:workgroup, true))
+            # Julia's intrinsics load and store floats as integers
+            intrinsic = UnsafeAtomics.Internal.use_intrinsics(P, T, s, v, al, ())
+            lt = intrinsic ? ct : ir_type(T)
             ld = instruction(gen_load, Tuple{P,Val{:acquire},Val{s},Val{v},Val{al}})
             @test startswith(ld, r"%\S+ = load atomic" * volatile_ir(v) * " $lt, " * pt(lt))
             @test endswith(ld, scope_ir(s) * " acquire, align $al")
@@ -180,6 +183,7 @@ function test_ir()
             @test endswith(st, scope_ir(s) * " release, align $al")
 
             rmw = instruction(gen_rmw!, Tuple{P,T,Val{:xchg},Val{:acq_rel},Val{s},Val{v},Val{al}})
+            lt = ir_type(T)
             @test startswith(rmw, r"%\S+ = atomicrmw" * volatile_ir(v) * " xchg " * pt(lt))
             @test occursin(", $lt %", rmw)
             @test endswith(rmw, scope_ir(s) * " acq_rel, align $al")
@@ -216,6 +220,49 @@ function test_ir_orderings()
     # Julia's names
     @test endswith(instruction(gen_rmw!, Tuple{P,Int32,Val{:add},Val{:acquire_release},Val{:device},Val{false},Val{4}}), " acq_rel, align 4")
     @test endswith(instruction(gen_rmw!, Tuple{P,Int32,Val{:add},Val{:sequentially_consistent},Val{:device},Val{false},Val{4}}), " seq_cst, align 4")
+end
+
+# which calls use `Core.Intrinsics` instead of an llvmcall
+function intrinsic(f, types)
+    src = string(first(only(Base.code_typed(f, types))))
+    has_intrinsic = occursin("Core.Intrinsics.atomic_pointer", src) ||
+                    occursin("atomic_pointerref", src) || occursin("atomic_pointerset", src) ||
+                    occursin("atomic_pointerreplace", src)
+    has_llvmcall = occursin("llvmcall", src)
+    @assert has_intrinsic != has_llvmcall
+    return has_intrinsic
+end
+
+function test_intrinsics()
+    # Ptr in the system scope, with the defaults: the same as UnsafeAtomics 0.3
+    for T in (Int8, Int32, UInt64, Float16, Float32, Float64)
+        P = Ptr{T}
+        @test intrinsic(gen_load, Tuple{P,Val{:acquire},Val{:system},Val{false},Val{sizeof(T)}})
+        @test intrinsic(gen_store!, Tuple{P,T,Val{:release},Val{:system},Val{false},Val{sizeof(T)}})
+        @test intrinsic(gen_cmpxchg!, Tuple{P,T,T,Val{:acq_rel},Val{:acquire},Val{:system},Val{false},Val{false},Val{sizeof(T)}})
+        @test !intrinsic(gen_rmw!, Tuple{P,T,Val{:xchg},Val{:acq_rel},Val{:system},Val{false},Val{sizeof(T)}})
+    end
+    P = Ptr{Int32}
+    # what the intrinsics can't express
+    @test !intrinsic(gen_load, Tuple{P,Val{:acquire},Val{:singlethread},Val{false},Val{4}})
+    @test !intrinsic(gen_load, Tuple{P,Val{:acquire},Val{:system},Val{true},Val{4}})
+    @test !intrinsic(gen_load, Tuple{P,Val{:acquire},Val{:system},Val{false},Val{8}})
+    @test !intrinsic(gen_store!, Tuple{P,Int32,Val{:release},Val{:system},Val{true},Val{4}})
+    @test !intrinsic(gen_cmpxchg!, Tuple{P,Int32,Int32,Val{:acq_rel},Val{:acquire},Val{:system},Val{true},Val{false},Val{4}})
+    @test !intrinsic(gen_cmpxchg!, Tuple{P,Int32,Int32,Val{:monotonic},Val{:seq_cst},Val{:system},Val{false},Val{false},Val{4}})
+    @test intrinsic(gen_cmpxchg!, Tuple{P,Int32,Int32,Val{:release},Val{:acquire},Val{:system},Val{false},Val{false},Val{4}})
+    # other types and pointers
+    @test !intrinsic(gen_load, Tuple{Ptr{Bool},Val{:acquire},Val{:system},Val{false},Val{1}})
+    @test !intrinsic(gen_load, Tuple{Ptr{Ptr{Cvoid}},Val{:acquire},Val{:system},Val{false},Val{8}})
+    @test !intrinsic(gen_load, Tuple{LLVMPtr{Int32,0},Val{:acquire},Val{:system},Val{false},Val{4}})
+
+    # both compare bitwise
+    xs = Float32[NaN, -0.0]
+    GC.@preserve xs for scope in (:system, :singlethread)
+        cas(i, c, n) = llvm_cmpxchg!(pointer(xs, i), c, n, Val(:seq_cst), Val(:seq_cst), Val(scope), Val(false), Val(false), Val(4), NOMD)
+        @test cas(1, NaN32, NaN32) === (old = NaN32, success = true)
+        @test cas(2, 0f0, 1f0) === (old = -0f0, success = false)
+    end
 end
 
 gen_fence(::Val{o}, ::Val{s}) where {o,s} = llvm_fence(Val(o), Val(s), NOMD)
