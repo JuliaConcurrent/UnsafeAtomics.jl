@@ -55,4 +55,14 @@ const workgroup = Internal.workgroup
 const device = Internal.device
 const system = Internal.system
 
+Internal.declare_public(
+    UnsafeAtomics,
+    :Ordering, :SyncScope,
+    :load, :store!, :cas!, :modify!, :fence,
+    :add!, :sub!, :xchg!, :and!, :nand!, :or!, :xor!, :max!, :min!, :right,
+    :unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cst,
+    :acquire_release, :sequentially_consistent,
+    :none, :singlethread, :subgroup, :workgroup, :device, :system,
+)
+
 end  # baremodule UnsafeAtomics
