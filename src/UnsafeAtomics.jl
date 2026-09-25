@@ -50,5 +50,9 @@ const sequentially_consistent = seq_cst
 # SyncScope
 const none = Internal.none
 const singlethread = Internal.singlethread
+const subgroup = Internal.subgroup
+const workgroup = Internal.workgroup
+const device = Internal.device
+const system = Internal.system
 
 end  # baremodule UnsafeAtomics
