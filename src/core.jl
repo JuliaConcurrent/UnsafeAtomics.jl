@@ -359,19 +359,37 @@ as_native_uint(::Type{T}) where {T} =
         error(LazyString("unsupported size: ", sizeof(T)))
     end
 
+const LOAD_ORDERINGS = (unordered, monotonic, acquire, seq_cst)
+const STORE_ORDERINGS = (unordered, monotonic, release, seq_cst)
+const RMW_ORDERINGS = (unordered, monotonic, acquire, release, acq_rel, seq_cst)
+const CAS_SUCCESS_ORDERINGS = (monotonic, acquire, release, acq_rel, seq_cst)
+const CAS_FAILURE_ORDERINGS = (monotonic, acquire, seq_cst)
+
+# The fallbacks below retry with a same-sized unsigned integer. If `T` already is that
+# integer, no specialized method matched: report why, instead of recursing forever.
+@noinline function throw_unsupported(::Type{T}, syncscope, valid_ordering::Bool) where {T}
+    valid_ordering || throw_invalid_ordering()
+    syncscope in syncscopes ||
+        throw(ArgumentError(string("unsupported syncscope: ", repr(syncscope))))
+    throw(ArgumentError(string("unsupported atomic type: ", T)))
+end
+
 function UnsafeAtomics.load(x::Ptr{T}, ordering, syncscope) where {T}
     UI = as_native_uint(T)
+    UI === T && throw_unsupported(T, syncscope, ordering in LOAD_ORDERINGS)
     v = UnsafeAtomics.load(Ptr{UI}(x), ordering, syncscope)
     return bitcast(T, v)
 end
 
 function UnsafeAtomics.store!(x::Ptr{T}, v::T, ordering, syncscope) where {T}
     UI = as_native_uint(T)
+    UI === T && throw_unsupported(T, syncscope, ordering in STORE_ORDERINGS)
     UnsafeAtomics.store!(Ptr{UI}(x), bitcast(UI, v), ordering, syncscope)::Nothing
 end
 
 function UnsafeAtomics.modify!(x::Ptr{T}, ::typeof(right), v::T, ordering, syncscope) where {T}
     UI = as_native_uint(T)
+    UI === T && throw_unsupported(T, syncscope, ordering in RMW_ORDERINGS)
     old, _ = UnsafeAtomics.modify!(Ptr{UI}(x), right, bitcast(UI, v), ordering, syncscope)
     return bitcast(T, old) => v
 end
@@ -385,6 +403,11 @@ function UnsafeAtomics.cas!(
     syncscope,
 ) where {T}
     UI = as_native_uint(T)
+    UI === T && throw_unsupported(
+        T,
+        syncscope,
+        success_ordering in CAS_SUCCESS_ORDERINGS && failure_ordering in CAS_FAILURE_ORDERINGS,
+    )
     (old, success) = UnsafeAtomics.cas!(
         Ptr{UI}(x),
         bitcast(UI, cmp),
