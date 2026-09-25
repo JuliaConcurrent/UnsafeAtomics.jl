@@ -7,7 +7,8 @@ function test_public()
     isdefined(Base, :ispublic) || return
     @testset for name in [:Ordering, :SyncScope,
                           :load, :store!, :cas!, :modify!, :fence,
-                          :add!, :sub!, :xchg!, :and!, :nand!, :or!, :xor!, :max!, :min!, :right,
+                          :add!, :sub!, :xchg!, :and!, :nand!, :or!, :xor!, :max!, :min!, :fmax!, :fmin!,
+                          :right, :fmax, :fmin,
                           :unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cst,
                           :acquire_release, :sequentially_consistent,
                           :none, :singlethread, :subgroup, :workgroup, :device, :system]
