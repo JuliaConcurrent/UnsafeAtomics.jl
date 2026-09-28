@@ -32,3 +32,29 @@ Base.print(io::IO, s::LLVMSyncScope) = print(io, string(s))
 Base.show(io::IO, o::ConcreteSyncScopes) = print(io, UnsafeAtomics, '.', llvm_syncscope(o))
 Base.show(io::IO, o::LLVMSyncScope) =
     print(io, UnsafeAtomics, ".SyncScope(", repr(llvm_syncscope(o)), ')')
+
+"""
+    UnsafeAtomics.default_scope(ptr)
+
+The syncscope of atomic operations on `ptr` unless another one is passed: `system` for a
+`Ptr`, and `device` for a `Core.LLVMPtr`, which is how GPU memory is usually accessed. On
+CPUs, every scope other than `singlethread` is the system scope.
+"""
+default_scope(::Ptr) = system
+default_scope(::LLVMPtr) = device
+
+# The name of the syncscope for the generator, which calls the default scope `:system`.
+scope_name(s::LLVMSyncScope) = s === system ? :system : llvm_syncscope(s)
+
+# The name of the scope, as a `Val` for the generator. The canonical scopes can also be passed
+# as a `Symbol`. Like orderings, scopes have to be constants.
+@inline scope_val(scope::LLVMSyncScope) = Val(scope_name(scope))
+@inline scope_val(scope::Symbol) =
+    (scope === :system || scope === :device || scope === :workgroup || scope === :subgroup ||
+     scope === :singlethread) ? Val(scope) : throw_invalid_scope()
+scope_val(@nospecialize(scope)) = throw_invalid_scope()
+
+# One literal: building the message at run time would allocate a string, which GPU code can't.
+@noinline throw_invalid_scope() = throw(ArgumentError(
+    "invalid syncscope: expected an UnsafeAtomics.SyncScope, or one of :singlethread, \
+     :subgroup, :workgroup, :device or :system"))

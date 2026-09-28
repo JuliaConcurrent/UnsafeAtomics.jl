@@ -22,8 +22,25 @@ base_ordering(::LLVMOrdering{name}) where {name} = name
 base_ordering(::LLVMOrdering{:seq_cst}) = :sequentially_consistent
 base_ordering(::LLVMOrdering{:acq_rel}) = :acquire_release
 
-# The failure ordering of a cmpxchg can't release. Derive it from the success ordering
-# like C++ does.
-failure_order(::typeof(release)) = monotonic
-failure_order(::typeof(acq_rel)) = acquire
-failure_order(order) = order
+"""
+    UnsafeAtomics.failure_order(order)
+
+The failure ordering of `cas!` for the success ordering `order`, unless another one is passed.
+Like in C++, it's `order` without its release part, as a failure ordering can't release:
+`monotonic` for `release`, `acquire` for `acq_rel`, and `order` otherwise.
+"""
+@inline failure_order(order) =
+    (order === release || order === :release) ? monotonic :
+    (order === acq_rel || order === :acq_rel || order === :acquire_release) ? acquire : order
+
+normalize_order(o) = o === :acquire_release ? :acq_rel : o === :sequentially_consistent ? :seq_cst : o
+
+# The LLVM name of an ordering, as a `Val` for the generator, which rejects invalid ones. Like
+# for Julia's atomic intrinsics, the ordering has to be a constant: otherwise, constructing the
+# `Val` is a dynamic call.
+@inline ordering_val(::LLVMOrdering{name}) where {name} = Val(name)
+@inline ordering_val(order::Symbol) = Val(normalize_order(order))
+ordering_val(@nospecialize(order)) = throw_invalid_ordering()
+
+@noinline throw_invalid_ordering() =
+    throw(Base.ConcurrencyViolationError("invalid atomic ordering"))

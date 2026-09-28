@@ -24,12 +24,20 @@ end
 
 rmw_table_for(@nospecialize T) =
     if T <: AbstractFloat
-        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (+, -, max, min))
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE
+         if op in (+, -, max, min, UnsafeAtomics.fmax, UnsafeAtomics.fmin))
     elseif T <: AbstractBits
         ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (right,))
+    elseif T <: Unsigned
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE
+         if !(op in (UnsafeAtomics.fmax, UnsafeAtomics.fmin)))
     else
-        OP_RMW_TABLE
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if !(op in FLOAT_OPS || op in UNSIGNED_OPS))
     end
+
+const FLOAT_OPS = (UnsafeAtomics.fmax, UnsafeAtomics.fmin)
+const UNSIGNED_OPS = (UnsafeAtomics.inc_wrap, UnsafeAtomics.dec_wrap, UnsafeAtomics.sub_cond,
+                      UnsafeAtomics.sub_sat)
 
 function test_default_ordering(T::Type)
     xs = T[rand(T), rand(T)]
@@ -137,7 +145,10 @@ function test_explicit_syncscope()
     UnsafeAtomics.fence(seq_cst, none)
 end
 
-llvm_ir(f, types) = sprint(io -> code_llvm(io, f, types; debuginfo = :none))
+# without the counters that code coverage adds (`atomicrmw add` on a constant address)
+llvm_ir(f, types) =
+    join(filter(!contains("inttoptr ("),
+                split(sprint(io -> code_llvm(io, f, types; debuginfo = :none)), '\n')), '\n')
 
 scoped_load(ptr, scope) = UnsafeAtomics.load(ptr, acquire, scope)
 scoped_store!(ptr, x, scope) = UnsafeAtomics.store!(ptr, x, release, scope)
@@ -186,7 +197,7 @@ end
 
 function test_unsupported_arguments()
     # These used to recurse in the `as_native_uint` fallbacks until the stack overflowed.
-    unsupported_scope = :workgroup
+    unsupported_scope = :agent  # only canonical scopes can be passed as a Symbol
     @testset for T in [Int32, Float32]
         xs = T[1, 2]
         ptr = pointer(xs, 1)
@@ -204,6 +215,9 @@ function test_unsupported_arguments()
                 ptr, T(3), monotonic, unsupported_scope)
             @test_throws ArgumentError UnsafeAtomics.cas!(
                 ptr, T(1), T(3), monotonic, monotonic, unsupported_scope)
+            @test_throws ArgumentError UnsafeAtomics.fence(acquire, unsupported_scope)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, :acquire_release)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, :bogus)
             @test xs == T[1, 2]
         end
     end
@@ -252,7 +266,7 @@ function test_cas_single_ordering()
     @test occursin(r"cmpxchg .* acq_rel acquire", llvm_ir(cas_acq_rel!, Tuple{Ptr{Int32},Int32,Int32}))
 end
 
-scoped_max!(ptr, x) = UnsafeAtomics.max!(ptr, x, acq_rel, singlethread)
+scoped_mul!(ptr, x) = UnsafeAtomics.modify!(ptr, *, x, acq_rel, singlethread)
 
 function test_cas_loop_fallback()
     # Operations without an atomicrmw instruction used to be a MethodError on Ptr.
@@ -287,7 +301,212 @@ function test_cas_loop_fallback()
     end
 
     @test occursin(r"cmpxchg .* syncscope\(\"singlethread\"\) acq_rel monotonic",
-                   llvm_ir(scoped_max!, Tuple{Ptr{Float64},Float64}))
+                   llvm_ir(scoped_mul!, Tuple{Ptr{Float64},Float64}))
+end
+
+float_modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, monotonic, device)
+
+function test_float_minmax()
+    # `max` and `min` have Julia's semantics: NaN propagates, and -0.0 < 0.0
+    @testset for T in [Float16, Float32, Float64], i in 1:2
+        xs = T[1, 0]
+        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        GC.@preserve xs begin
+            @test UnsafeAtomics.max!(ptr, T(-0.0)) === T(1)
+            @test UnsafeAtomics.modify!(ptr, max, T(NaN)) === (T(1) => T(NaN))
+            @test isnan(xs[1])
+            xs[1] = -0.0
+            @test UnsafeAtomics.modify!(ptr, max, T(0.0)) === (T(-0.0) => T(0.0))
+            @test xs[1] === T(0.0)
+            @test UnsafeAtomics.modify!(ptr, min, T(-0.0)) === (T(0.0) => T(-0.0))
+            @test xs[1] === T(-0.0)
+            @test UnsafeAtomics.min!(ptr, T(NaN)) === T(-0.0)
+            @test isnan(xs[1])
+        end
+    end
+    # `fmax` and `fmin` ignore NaN
+    @testset for T in [Float16, Float32, Float64], i in 1:2
+        xs = T[1, 0]
+        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        GC.@preserve xs begin
+            @test UnsafeAtomics.fmax!(ptr, T(NaN)) === T(1)
+            @test xs[1] === T(1)
+            @test UnsafeAtomics.modify!(ptr, UnsafeAtomics.fmax, T(2)) === (T(1) => T(2))
+            @test UnsafeAtomics.fmin!(ptr, T(NaN), acquire) === T(2)
+            @test UnsafeAtomics.modify!(ptr, UnsafeAtomics.fmin, T(-1), release) === (T(2) => T(-1))
+            @test xs[1] === T(-1)
+        end
+    end
+    @test UnsafeAtomics.fmax(NaN, 1.0) === 1.0
+    @test UnsafeAtomics.fmax(1.0, NaN) === 1.0
+    @test UnsafeAtomics.fmin(NaN32, 2f0) === 2f0
+    @test isnan(UnsafeAtomics.fmin(NaN, NaN))
+
+    # native where LLVM has the instruction; a compare-and-swap loop otherwise
+    P = Core.LLVMPtr{Float32,1}
+    ir(op) = llvm_ir(float_modify!, Tuple{P,typeof(op),Float32})
+    @test occursin("atomicrmw fmax", ir(UnsafeAtomics.fmax))
+    @test occursin("atomicrmw fmin", ir(UnsafeAtomics.fmin))
+    if Base.libllvm_version >= v"21"
+        @test occursin("atomicrmw fmaximum", ir(max))
+        @test occursin("atomicrmw fminimum", ir(min))
+    else
+        @test occursin("cmpxchg", ir(max)) && !occursin("atomicrmw", ir(max))
+        @test occursin("cmpxchg", ir(min)) && !occursin("atomicrmw", ir(min))
+    end
+end
+
+wrap_modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, monotonic, device)
+
+function test_unsigned_ops()
+    UA = UnsafeAtomics
+    # the semantics of the LLVM instructions
+    @test UA.inc_wrap(0x03, 0x05) === 0x04
+    @test UA.inc_wrap(0x05, 0x05) === 0x00
+    @test UA.inc_wrap(0x07, 0x05) === 0x00
+    @test UA.dec_wrap(0x03, 0x05) === 0x02
+    @test UA.dec_wrap(0x00, 0x05) === 0x05
+    @test UA.dec_wrap(0x07, 0x05) === 0x05
+    @test UA.sub_cond(0x07, 0x05) === 0x02
+    @test UA.sub_cond(0x03, 0x05) === 0x03
+    @test UA.sub_sat(0x07, 0x05) === 0x02
+    @test UA.sub_sat(0x03, 0x05) === 0x00
+    @test_throws MethodError UA.inc_wrap(1, 2)
+
+    @testset for T in [UInt8, UInt32, UInt64], i in 1:2
+        xs = T[3, 0]
+        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        GC.@preserve xs begin
+            @test UA.inc_wrap!(ptr, T(4)) === T(3)
+            @test UA.inc_wrap!(ptr, T(4), acquire) === T(4)
+            @test UA.dec_wrap!(ptr, T(4), release, device) === T(0)
+            @test UA.modify!(ptr, UA.dec_wrap, T(4)) === (T(4) => T(3))
+            @test UA.sub_cond!(ptr, T(5)) === T(3)
+            @test UA.modify!(ptr, UA.sub_cond, T(2)) === (T(3) => T(1))
+            @test UA.sub_sat!(ptr, T(2)) === T(1)
+            @test UA.modify!(ptr, UA.sub_sat, T(1), seq_cst, singlethread) === (T(0) => T(0))
+            @test xs == T[0, 0]
+        end
+    end
+
+    # native from the LLVM version that has the instruction; a compare-and-swap loop before
+    P = Core.LLVMPtr{UInt32,1}
+    for (op, rmw, version) in ((UA.inc_wrap, "uinc_wrap", v"22"), (UA.dec_wrap, "udec_wrap", v"22"),
+                               (UA.sub_cond, "usub_cond", v"22"), (UA.sub_sat, "usub_sat", v"22"))
+        ir = llvm_ir(wrap_modify!, Tuple{P,typeof(op),UInt32})
+        if Base.libllvm_version >= version
+            @test occursin("atomicrmw $rmw", ir)
+        else
+            @test occursin("cmpxchg", ir) && !occursin("atomicrmw", ir)
+        end
+    end
+end
+
+function test_native_rmw()
+    # which operations have an atomicrmw instruction, on this version of LLVM
+    UA = UnsafeAtomics
+    native_rmw = UA.Internal.native_rmw
+    llvm = Base.libllvm_version
+    bf16 = isdefined(Core, :BFloat16) ? (Core.BFloat16,) : ()
+    for T in (Int8, Int32, Int64), (op, rmw) in ((+, :add), (-, :sub), (&, :and), (|, :or),
+                                                 (xor, :xor), (⊼, :nand), (max, :max),
+                                                 (min, :min), (right, :xchg))
+        @test native_rmw(op, T) === rmw
+    end
+    for T in (UInt8, UInt64)
+        @test native_rmw(max, T) === :umax
+        @test native_rmw(min, T) === :umin
+        @test native_rmw(UA.inc_wrap, T) === (llvm >= v"22" ? :uinc_wrap : nothing)
+        @test native_rmw(UA.dec_wrap, T) === (llvm >= v"22" ? :udec_wrap : nothing)
+        @test native_rmw(UA.sub_cond, T) === (llvm >= v"22" ? :usub_cond : nothing)
+        @test native_rmw(UA.sub_sat, T) === (llvm >= v"22" ? :usub_sat : nothing)
+    end
+    @test native_rmw(UA.inc_wrap, Int32) === nothing
+    for T in bf16
+        # the AArch64 back-end can't compile these before LLVM 20
+        @test native_rmw(+, T) === (llvm >= v"20" ? :fadd : nothing)
+        @test native_rmw(UA.fmax, T) === (llvm >= v"20" ? :fmax : nothing)
+        @test native_rmw(right, T) === :xchg
+    end
+    for T in (Float16, Float32, Float64)
+        @test native_rmw(+, T) === :fadd
+        @test native_rmw(-, T) === :fsub
+        @test native_rmw(UA.fmax, T) === :fmax
+        @test native_rmw(UA.fmin, T) === :fmin
+        @test native_rmw(max, T) === (llvm >= v"21" ? :fmaximum : nothing)
+        @test native_rmw(min, T) === (llvm >= v"21" ? :fminimum : nothing)
+        @test native_rmw(right, T) === :xchg
+        @test native_rmw(&, T) === nothing
+    end
+    @test native_rmw(|, Bool) === :or
+    @test native_rmw(max, Bool) === :umax
+    @test native_rmw(⊼, Bool) === nothing  # a bitwise nand of Bools isn't a Bool
+    @test native_rmw(+, Bool) === nothing
+    @test native_rmw(right, Ptr{Cvoid}) === :xchg
+    @test native_rmw(+, Ptr{Cvoid}) === nothing
+    @test native_rmw(right, Core.LLVMPtr{Cvoid,1}) === :xchg
+    @test native_rmw(right, Nothing) === :xchg
+    @test native_rmw(*, Int32) === nothing
+    @test native_rmw((a, b) -> a + b, Int32) === nothing
+end
+
+default_load(ptr) = UnsafeAtomics.load(ptr)
+default_store!(ptr, x) = UnsafeAtomics.store!(ptr, x, release)
+default_cas!(ptr, cmp, new) = UnsafeAtomics.cas!(ptr, cmp, new)
+default_add!(ptr, x) = UnsafeAtomics.add!(ptr, x)
+default_modify!(ptr, x) = UnsafeAtomics.modify!(ptr, *, x, acquire)
+
+function test_default_scope()
+    @test UnsafeAtomics.default_scope(Ptr{Int}(0)) === system
+    @test UnsafeAtomics.default_scope(reinterpret(Core.LLVMPtr{Int,1}, 0)) === device
+    # GPU memory is accessed through LLVMPtr: use the device scope rather than the system one
+    @testset for P in [Ptr{Int32}, Core.LLVMPtr{Int32,0}, Core.LLVMPtr{Int32,1}]
+        scope = P <: Ptr ? system : device
+        @test scoped_instruction(llvm_ir(default_load, Tuple{P}), r"load atomic .* seq_cst", scope)
+        @test scoped_instruction(llvm_ir(default_store!, Tuple{P,Int32}), r"store atomic .* release", scope)
+        @test scoped_instruction(llvm_ir(default_cas!, Tuple{P,Int32,Int32}), r"cmpxchg .* seq_cst seq_cst", scope)
+        @test scoped_instruction(llvm_ir(default_add!, Tuple{P,Int32}), r"atomicrmw add .* seq_cst", scope)
+        ir = llvm_ir(default_modify!, Tuple{P,Int32})
+        @test all(line -> occursin("syncscope(\"device\")", line) == (scope === device),
+                  filter(contains(r"load atomic i32|cmpxchg"), split(ir, '\n')))
+    end
+end
+
+function test_contention()
+    # in another process, as this one may only have one thread
+    code = """
+    using UnsafeAtomics
+    const UA = UnsafeAtomics
+    ints = zeros(Int, 1); floats = zeros(Float64, 1); small = zeros(Int16, 1); bools = [false]
+    n = 2_000 * Threads.nthreads()
+    GC.@preserve ints floats small bools begin
+        Threads.@threads for i in 1:n
+            UA.add!(pointer(ints), 1)                                       # atomicrmw
+            UA.modify!(pointer(floats), (a, b) -> a + b, 1.0, UA.acq_rel)   # CAS loop
+            UA.max!(pointer(small), Int16(i % 1000), UA.monotonic)
+            UA.xor!(pointer(bools), true, UA.monotonic, :workgroup)
+            UA.fence(:seq_cst)
+        end
+    end
+    print(Threads.nthreads(), " ", ints[1] == n, " ", floats[1] == n, " ", small[1] == 999, " ",
+          bools[1] == isodd(n))
+    """
+    cmd = `$(Base.julia_cmd()) --startup-file=no --threads=4 --project=$(Base.active_project()) -e $code`
+    @test readchomp(addenv(cmd, "JULIA_LOAD_PATH" => join(LOAD_PATH, Sys.iswindows() ? ';' : ':'))) ==
+          "4 true true true true"
+end
+
+function test_zero_size_values()
+    xs = [nothing, nothing]
+    GC.@preserve xs begin
+        ptr = pointer(xs)
+        @test UnsafeAtomics.load(ptr, acquire) === nothing
+        @test UnsafeAtomics.store!(ptr, nothing, release, workgroup) === nothing
+        @test UnsafeAtomics.xchg!(ptr, nothing) === nothing
+        @test UnsafeAtomics.modify!(ptr, right, nothing) === (nothing => nothing)
+        @test UnsafeAtomics.cas!(ptr, nothing, nothing) === (old = nothing, success = true)
+        @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, release)
+    end
 end
 
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
@@ -330,7 +549,7 @@ function test_cpu_seq_cst_fence()
 
     # The x86_64 inline assembly must only be reachable through the hook, and only
     # before LLVM 20, which emits the same instruction for a plain fence.
-    src, _ = only(code_typed(UnsafeAtomics.fence, Tuple{typeof(seq_cst),typeof(none)};
+    src, _ = only(code_typed(UnsafeAtomics.Internal.system_fence, Tuple{typeof(seq_cst)};
                              optimize = false))
     @test occursin("cpu_seq_cst_fence", string(src)) ==
           (Sys.ARCH === :x86_64 && Base.libllvm_version < v"20")
