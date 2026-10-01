@@ -1,9 +1,9 @@
 # Atomic instructions as `llvmcall`s.
 #
-# Each primitive below compiles to exactly one LLVM atomic instruction, from IR that is
-# generated for the pointer type, value type, ordering, syncscope, flags and metadata. All
-# of those are type parameters, so these primitives don't depend on constant propagation;
-# they are the layer that back-ends can rely on:
+# Each primitive below compiles to exactly one LLVM atomic instruction, which LLVM.jl builds
+# for the pointer type, value type, ordering, syncscope, flags and metadata. All of those are
+# type parameters, so these primitives don't depend on constant propagation; they are the
+# layer that back-ends can rely on:
 #
 #     llvm_load(ptr, Val(order), Val(scope), Val(volatile), Val(align), Val(md)) -> T
 #     llvm_store!(ptr, x, Val(order), Val(scope), Val(volatile), Val(align), Val(md))
@@ -18,20 +18,10 @@
 # Invalid orderings throw a `ConcurrencyViolationError`, other invalid arguments an
 # `ArgumentError`, when the primitive is called.
 
-# Before Julia 1.12, llvmcall passes `Ptr` as an integer and uses typed pointers.
-const OPAQUE_POINTERS = VERSION >= v"1.12-"
-
 const AnyPtr{T} = Union{Ptr{T},LLVMPtr{T}}
 
 address_space(::Type{<:Ptr}) = 0
 address_space(::Type{<:LLVMPtr{<:Any,A}}) where {A} = A
-
-llvm_pointer(pointee, A) =
-    if OPAQUE_POINTERS
-        A == 0 ? "ptr" : "ptr addrspace($A)"
-    else
-        A == 0 ? "$pointee*" : "$pointee addrspace($A)*"
-    end
 
 const HAS_BFLOAT16 = isdefined(Core, :BFloat16)
 
@@ -48,36 +38,27 @@ const ATOMIC_SIZES =
         (1, 2, 4, 8, 16)
     end
 
-# The LLVM type of an atomic value of type `T`, or `nothing` if it isn't supported.
-function llvm_type(::Type{T}) where {T}
-    T === Float16 && return "half"
-    T === Float32 && return "float"
-    T === Float64 && return "double"
-    HAS_BFLOAT16 && T === Core.BFloat16 && return "bfloat"
-    T <: Ptr && return OPAQUE_POINTERS ? "ptr" : "i$WORD_SIZE"
-    T <: LLVMPtr && return llvm_pointer("i8", address_space(T))
-    isprimitivetype(T) && sizeof(T) in ATOMIC_SIZES && return "i$(8 * sizeof(T))"
-    return nothing
-end
+# Whether values of type `T` can be accessed atomically. Their LLVM type is what `llvmcall`
+# lowers `T` to: `iN` for integers and other primitive types, `half`, `float`, `double` and
+# `bfloat` for floats, and a pointer or (for `Ptr` before Julia 1.12) an integer for pointers.
+is_atomic_type(::Type{T}) where {T} = isprimitivetype(T) && sizeof(T) in ATOMIC_SIZES
 
 is_zero_size(T) = Base.issingletontype(T)
 
-# The IR that turns the pointer argument `%0` into a pointer to `lt`, the type of that
-# pointer, and its value.
-function pointer_argument(::Type{P}, lt) where {P}
-    A = address_space(P)
-    pt = llvm_pointer(lt, A)
-    if OPAQUE_POINTERS
-        return "", pt, "%0"
-    elseif P <: Ptr
-        return "%p = inttoptr i$WORD_SIZE %0 to $pt", pt, "%p"
-    else
-        return "%p = bitcast $(llvm_pointer("i8", A)) %0 to $pt", pt, "%p"
-    end
+# The pointer argument as a pointer to values of LLVM type `ty`. Before Julia 1.12, llvmcall
+# passes a `Ptr` as an integer, and a `Core.LLVMPtr` as an `i8` pointer; with opaque
+# pointers, the cast is folded away.
+function pointer_operand!(builder, ptr, ty, A)
+    pt = LLVM.PointerType(ty, A)
+    return ptr.value_type isa LLVM.IntegerType ? inttoptr!(builder, ptr, pt) :
+           bitcast!(builder, ptr, pt)
 end
 
 julia_order(o) = o === :acq_rel ? :acquire_release : o === :seq_cst ? :sequentially_consistent : o
 order_strength(o) = findfirst(==(o), (:unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cst))
+
+# The LLVM.jl ordering for the name of a valid ordering.
+atomic_ordering(o::Symbol) = parse(LLVM.AtomicOrdering.T, String(o))
 
 # Julia's pointer intrinsics only take 8 bytes before 1.12, and on 32-bit platforms.
 const MAX_POINTERATOMIC_SIZE = VERSION >= v"1.12.0-DEV.161" && Int == Int64 ? 16 : 8
@@ -95,15 +76,13 @@ const RMW_ORDERS = (:monotonic, :acquire, :release, :acq_rel, :seq_cst)
 const CAS_FAILURE_ORDERS = (:monotonic, :acquire, :seq_cst)
 const FENCE_ORDERS = (:acquire, :release, :acq_rel, :seq_cst)
 
-const RMW_OPERATIONS = (
-    :xchg, :add, :sub, :and, :nand, :or, :xor, :max, :min, :umax, :umin,
-    :fadd, :fsub, :fmax, :fmin,
-    (Base.libllvm_version >= v"16" ? (:uinc_wrap, :udec_wrap) : ())...,
-    (Base.libllvm_version >= v"20" ? (:usub_cond, :usub_sat) : ())...,
-    (Base.libllvm_version >= v"21" ? (:fmaximum, :fminimum) : ())...,
-)
-
-const FLOAT_RMW_OPERATIONS = (:fadd, :fsub, :fmax, :fmin, :fmaximum, :fminimum)
+# The `atomicrmw` operation called `op` in LLVM IR, or `nothing` if this version of LLVM
+# doesn't have it. LLVM.jl knows every operation, on every version of LLVM.
+function rmw_operation(op)
+    op isa Symbol || return nothing
+    binop = tryparse(LLVM.AtomicRMWBinOp.T, String(op))
+    return binop !== nothing && LLVM.isavailable(binop) ? binop : nothing
+end
 
 # Invalid arguments are reported when the primitive is called, not when it's generated.
 struct InvalidOrdering <: Exception end
@@ -132,36 +111,37 @@ function check_access(::Type{T}, align, volatile, weak = false) where {T}
     volatile isa Bool || invalid("volatile must be a Bool, got ", repr(volatile))
     weak isa Bool || invalid("weak must be a Bool, got ", repr(weak))
     is_zero_size(T) && return
-    llvm_type(T) === nothing && invalid("unsupported atomic type ", T)
+    is_atomic_type(T) || invalid("unsupported atomic type ", T)
     align isa Integer && !(align isa Bool) && ispow2(align) && align >= sizeof(T) ||
         invalid("invalid alignment ", repr(align), " for an atomic ", T,
                 ": expected a power of two, at least ", sizeof(T))
     return
 end
 
-function syncscope_string(scope)
+# The scope for LLVM.jl's builders, which also call the default scope "system".
+function check_scope(scope)
     scope isa Symbol || invalid("invalid syncscope ", repr(scope))
-    scope === :system && return ""
-    return " syncscope(\"$(llvm_string(scope))\")"
+    return String(scope)
 end
 
-function metadata_string(md)
+function check_metadata(md)
     md isa Tuple || invalid("invalid metadata ", repr(md))
-    io = IOBuffer()
     for entry in md
         entry isa Tuple{Symbol,Tuple} && entry[1] === :mmra ||
             invalid("unsupported metadata ", repr(entry))
         tags = entry[2]
         all(tag -> tag isa Tuple{Symbol,Symbol}, tags) || invalid("invalid MMRA tags ", repr(tags))
-        isempty(tags) && continue
-        nodes = ["!{!\"$(llvm_string(prefix))\", !\"$(llvm_string(suffix))\"}"
-                 for (prefix, suffix) in tags]
-        print(io, ", !mmra ", length(nodes) == 1 ? only(nodes) : "!{$(join(nodes, ", "))}")
     end
-    return String(take!(io))
+    return md
 end
 
-volatile_string(volatile) = volatile ? " volatile" : ""
+function attach_metadata!(inst, md)
+    for (_, tags) in md
+        isempty(tags) && continue
+        mmra!(inst, (String(prefix) => String(suffix) for (prefix, suffix) in tags)...)
+    end
+    return inst
+end
 
 # An atomic operation on a zero-size value only has to order memory.
 fence_for(o, scope, md) =
@@ -173,73 +153,69 @@ function fence_ir(order, scope, md)
     # like `Core.Intrinsics.atomic_fence`; LLVM would reject it
     order === :monotonic && return :(nothing)
     o = check_order(order, FENCE_ORDERS)
-    ir = """
-        fence$(syncscope_string(scope)) $o$(metadata_string(md))
-        ret void
-        """
-    return :(llvmcall($ir, Cvoid, Tuple{}))
+    s, md = check_scope(scope), check_metadata(md)
+    return generate_llvmcall(Nothing, Tuple{}) do builder
+        attach_metadata!(fence!(builder, atomic_ordering(o); scope = s), md)
+        nothing
+    end
 end
 
 function load_ir(P, T, order, scope, volatile, align, md)
     o = check_order(order, LOAD_ORDERS)
     check_access(T, align, volatile)
-    S, MD = syncscope_string(scope), metadata_string(md)
+    s, md = check_scope(scope), check_metadata(md)
     is_zero_size(T) && return :($(fence_for(o, scope, md)); $(T.instance))
     use_intrinsics(P, T, scope, volatile, align, md) &&
         return :(Core.Intrinsics.atomic_pointerref(ptr, $(QuoteNode(julia_order(o)))))
-    lt = llvm_type(T)
-    setup, pt, p = pointer_argument(P, lt)
-    ir = """
-        $setup
-        %v = load atomic$(volatile_string(volatile)) $lt, $pt $p$S $o, align $align$MD
-        ret $lt %v
-        """
-    return :(llvmcall($ir, $T, Tuple{$P}, ptr))
+    return generate_llvmcall(T, Tuple{P}, :ptr) do builder, ptr
+        lt = convert(LLVMType, T)
+        p = pointer_operand!(builder, ptr, lt, address_space(P))
+        attach_metadata!(load!(builder, lt, p; ordering = atomic_ordering(o), scope = s,
+                               align, volatile), md)
+    end
 end
 
 function store_ir(P, T, order, scope, volatile, align, md)
     o = check_order(order, STORE_ORDERS)
     check_access(T, align, volatile)
-    S, MD = syncscope_string(scope), metadata_string(md)
+    s, md = check_scope(scope), check_metadata(md)
     is_zero_size(T) && return :($(fence_for(o, scope, md)); nothing)
     use_intrinsics(P, T, scope, volatile, align, md) &&
         return :(Core.Intrinsics.atomic_pointerset(ptr, x, $(QuoteNode(julia_order(o)))); nothing)
-    lt = llvm_type(T)
-    setup, pt, p = pointer_argument(P, lt)
-    ir = """
-        $setup
-        store atomic$(volatile_string(volatile)) $lt %1, $pt $p$S $o, align $align$MD
-        ret void
-        """
-    return :(llvmcall($ir, Cvoid, Tuple{$P,$T}, ptr, x))
+    return generate_llvmcall(Nothing, Tuple{P,T}, :ptr, :x) do builder, ptr, x
+        p = pointer_operand!(builder, ptr, x.value_type, address_space(P))
+        attach_metadata!(store!(builder, x, p; ordering = atomic_ordering(o), scope = s,
+                                align, volatile), md)
+        nothing
+    end
 end
 
 function rmw_ir(P, T, op, order, scope, volatile, align, md)
     o = check_order(order, RMW_ORDERS)
     check_access(T, align, volatile)
-    op in RMW_OPERATIONS ||
+    binop = rmw_operation(op)
+    binop === nothing &&
         invalid("unsupported atomicrmw operation ", repr(op), " on LLVM ", Base.libllvm_version)
-    S, MD = syncscope_string(scope), metadata_string(md)
+    s, md = check_scope(scope), check_metadata(md)
     is_zero_size(T) && return :($(fence_for(o, scope, md)); $(T.instance))
-    if op in FLOAT_RMW_OPERATIONS ? !is_ieee_float(T) :
-       op !== :xchg && (is_ieee_float(T) || T <: Ptr || T <: LLVMPtr)
+    # floating-point operations only apply to floating-point values, and the others (except
+    # `xchg`) to integers. values of a `Ptr` are integers before Julia 1.12, but only
+    # support `xchg`.
+    op !== :xchg &&
+        (T <: Ptr || T <: LLVMPtr || LLVM.isfloatingpoint(binop) != is_ieee_float(T)) &&
         invalid("atomicrmw ", op, " doesn't apply to values of type ", T)
+    return generate_llvmcall(T, Tuple{P,T}, :ptr, :x) do builder, ptr, x
+        p = pointer_operand!(builder, ptr, x.value_type, address_space(P))
+        inst = atomic_rmw!(builder, binop, p, x, atomic_ordering(o); scope = s, align, volatile)
+        attach_metadata!(inst, md)
     end
-    lt = llvm_type(T)
-    setup, pt, p = pointer_argument(P, lt)
-    ir = """
-        $setup
-        %v = atomicrmw$(volatile_string(volatile)) $op $pt $p, $lt %1$S $o, align $align$MD
-        ret $lt %v
-        """
-    return :(llvmcall($ir, $T, Tuple{$P,$T}, ptr, x))
 end
 
 function cmpxchg_ir(P, T, success_order, failure_order, scope, weak, volatile, align, md)
     so = check_order(success_order, RMW_ORDERS)
     fo = check_order(failure_order, CAS_FAILURE_ORDERS)
     check_access(T, align, volatile, weak)
-    S, MD = syncscope_string(scope), metadata_string(md)
+    s, md = check_scope(scope), check_metadata(md)
     is_zero_size(T) &&
         return :($(fence_for(so, scope, md)); (old = $(T.instance), success = true))
     # the intrinsic is strong, and rejects a failure ordering stronger than the success one
@@ -248,28 +224,21 @@ function cmpxchg_ir(P, T, success_order, failure_order, scope, weak, volatile, a
         return :(Core.Intrinsics.atomic_pointerreplace(
             ptr, cmp, new, $(QuoteNode(julia_order(so))), $(QuoteNode(julia_order(fo)))))
     end
-    lt = llvm_type(T)
-    # cmpxchg only takes integers and pointers
-    ct = is_ieee_float(T) ? "i$(8 * sizeof(T))" : lt
-    setup, pt, p = pointer_argument(P, ct)
-    c, n, o = ct == lt ? ("%1", "%2", "%o") : ("%c", "%n", "%of")
-    # llvmcall lowers a tuple of two i8s to an array
-    rt = lt == "i8" ? "[2 x i8]" : "{ $lt, i8 }"
-    ir = """
-        $setup
-        $(ct == lt ? "" : "%c = bitcast $lt %1 to $ct\n%n = bitcast $lt %2 to $ct")
-        %r = cmpxchg$(weak ? " weak" : "")$(volatile_string(volatile)) $pt $p, $ct $c, $ct $n$S $so $fo, align $align$MD
-        %o = extractvalue { $ct, i1 } %r, 0
-        $(ct == lt ? "" : "%of = bitcast $ct %o to $lt")
-        %s = extractvalue { $ct, i1 } %r, 1
-        %s8 = zext i1 %s to i8
-        %t = insertvalue $rt undef, $lt $o, 0
-        %u = insertvalue $rt %t, i8 %s8, 1
-        ret $rt %u
-        """
-    return quote
-        old, success = llvmcall($ir, Tuple{$T,Bool}, Tuple{$P,$T,$T}, ptr, cmp, new)
-        return (; old, success)
+    RT = @NamedTuple{old::T, success::Bool}
+    return generate_llvmcall(RT, Tuple{P,T,T}, :ptr, :cmp, :new) do builder, ptr, cmp, new
+        lt = cmp.value_type
+        # cmpxchg only takes integers and pointers
+        ct = is_ieee_float(T) ? LLVM.IntType(8 * sizeof(T)) : lt
+        p = pointer_operand!(builder, ptr, ct, address_space(P))
+        c, n = bitcast!(builder, cmp, ct), bitcast!(builder, new, ct)
+        r = atomic_cmpxchg!(builder, p, c, n, atomic_ordering(so), atomic_ordering(fo);
+                            scope = s, align, volatile, weak)
+        attach_metadata!(r, md)
+        old = bitcast!(builder, extract_value!(builder, r, 0), lt)
+        success = zext!(builder, extract_value!(builder, r, 1), LLVM.Int8Type())
+        # llvmcall lowers a pair of `i8`s to an array, and others to a struct
+        rt = convert(LLVMType, RT)
+        insert_value!(builder, insert_value!(builder, UndefValue(rt), old, 0), success, 1)
     end
 end
 
@@ -302,7 +271,7 @@ end
 # type `T`, and a compare-and-swap loop otherwise.
 function native_rmw(@nospecialize(op), @nospecialize(T))
     is_zero_size(T) && return op === right ? :xchg : nothing
-    llvm_type(T) === nothing && return nothing
+    is_atomic_type(T) || return nothing
     int = T <: Base.BitInteger
     # before LLVM 20, the AArch64 back-end can't compile floating-point atomicrmw on bfloat
     float = is_ieee_float(T) &&
@@ -326,10 +295,10 @@ function native_rmw(@nospecialize(op), @nospecialize(T))
     elseif op === max
         # Julia's `max` propagates NaNs and orders -0.0 before 0.0, like LLVM's `fmaximum`
         return T <: Base.BitSigned ? :max : T <: Base.BitUnsigned || bool ? :umax :
-               float && :fmaximum in RMW_OPERATIONS ? :fmaximum : nothing
+               float && LLVM.isavailable(LLVM.AtomicRMWBinOp.FMaximum) ? :fmaximum : nothing
     elseif op === min
         return T <: Base.BitSigned ? :min : T <: Base.BitUnsigned || bool ? :umin :
-               float && :fminimum in RMW_OPERATIONS ? :fminimum : nothing
+               float && LLVM.isavailable(LLVM.AtomicRMWBinOp.FMinimum) ? :fminimum : nothing
     elseif op === UnsafeAtomics.fmax
         return float ? :fmax : nothing
     elseif op === UnsafeAtomics.fmin
