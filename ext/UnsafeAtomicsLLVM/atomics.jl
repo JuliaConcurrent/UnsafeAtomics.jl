@@ -1,4 +1,4 @@
-using LLVM
+using LLVM, LLVM.IR, LLVM.Build
 using LLVM.Interop
 
 const MEMORY_ORDERING_EXPLANATION = """
@@ -91,41 +91,28 @@ end
 
 _valueof(::Val{x}) where {x} = x
 
-@generated function atomic_pointerref(ptr::LLVMPtr{T,A}, order::AllOrdering, sync) where {T,A}
+@inline function atomic_pointerref(ptr::LLVMPtr{T}, order::AllOrdering, sync) where {T}
     sizeof(T) == 0 && return T.instance
-    llvm_order     = _valueof(llvm_from_julia_ordering(order()))
-    llvm_syncscope = _valueof(sync())
-    @dispose ctx = Context() begin
-        eltyp = convert(LLVMType, T)
+    return llvm_atomic_load(ptr, llvm_from_julia_ordering(order), sync)
+end
 
-        T_ptr = convert(LLVMType, ptr)
+# Non-atomic accesses don't have a synchronization scope.
+access_scope(order, scope) =
+    order == LLVM.API.LLVMAtomicOrderingNotAtomic ? nothing : String(scope)
 
-        T_typed_ptr = LLVM.PointerType(eltyp, A)
-
-        # create a function
-        param_types = [T_ptr]
-        llvm_f, _ = create_function(eltyp, param_types)
-
-        # generate IR
-        @dispose builder = IRBuilder() begin
-            entry = BasicBlock(llvm_f, "entry")
-            position!(builder, entry)
-
-            typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
-            ld = load!(builder, eltyp, typed_ptr)
-            ordering!(ld, llvm_order)
-            syncscope!(ld, SyncScope(string(llvm_syncscope)))
-
-            if A != 0
-                metadata(ld)[LLVM.MD_tbaa] = tbaa_addrspace(A)
-            end
-            alignment!(ld, sizeof(T))
-
-            ret!(builder, ld)
-        end
-
-        call_function(llvm_f, T, Tuple{LLVMPtr{T,A}}, :ptr)
+@llvmgenerated builder function llvm_atomic_load(
+    ptr::LLVMPtr{T,A},
+    ::Val{order},
+    ::Val{sync},
+)::T where {T,A,order,sync}
+    eltyp = convert(LLVMType, T)
+    typed_ptr = bitcast!(builder, ptr, LLVM.PointerType(eltyp, A))
+    ld = load!(builder, eltyp, typed_ptr; ordering = order,
+               scope = access_scope(order, sync), align = sizeof(T))
+    if A != 0
+        ld.metadata[MD_tbaa] = tbaa_addrspace(A)
     end
+    return ld
 end
 
 @generated function atomic_pointerset(
@@ -151,42 +138,25 @@ end
             end
         end
     end
-    llvm_order     = _valueof(llvm_from_julia_ordering(order()))
-    llvm_syncscope = _valueof(sync())
-    @dispose ctx = Context() begin
-        eltyp = convert(LLVMType, T)
-        T_ptr = convert(LLVMType, ptr)
-        T_typed_ptr = LLVM.PointerType(eltyp, A)
-
-        # create a function
-        param_types = [T_ptr, eltyp]
-        llvm_f, _ = create_function(LLVM.VoidType(), param_types)
-
-        # generate IR
-        @dispose builder = IRBuilder() begin
-            entry = BasicBlock(llvm_f, "entry")
-            position!(builder, entry)
-
-            typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
-            val = parameters(llvm_f)[2]
-            st = store!(builder, val, typed_ptr)
-            ordering!(st, llvm_order)
-            syncscope!(st, SyncScope(string(llvm_syncscope)))
-
-            if A != 0
-                metadata(st)[LLVM.MD_tbaa] = tbaa_addrspace(A)
-            end
-            alignment!(st, sizeof(T))
-
-            ret!(builder)
-        end
-
-        call = call_function(llvm_f, Cvoid, Tuple{LLVMPtr{T,A},T}, :ptr, :x)
-        quote
-            $call
-            ptr
-        end
+    quote
+        llvm_atomic_store(ptr, x, llvm_from_julia_ordering(order), sync)
+        ptr
     end
+end
+
+@llvmgenerated builder function llvm_atomic_store(
+    ptr::LLVMPtr{T,A},
+    x::T,
+    ::Val{order},
+    ::Val{sync},
+)::Nothing where {T,A,order,sync}
+    typed_ptr = bitcast!(builder, ptr, LLVM.PointerType(convert(LLVMType, T), A))
+    st = store!(builder, x, typed_ptr; ordering = order,
+                scope = access_scope(order, sync), align = sizeof(T))
+    if A != 0
+        st.metadata[MD_tbaa] = tbaa_addrspace(A)
+    end
+    return nothing
 end
 
 right(_, r) = r
@@ -210,42 +180,16 @@ const binoptable = [
 
 const AtomicRMWBinOpVal = Union{(Val{binop} for (_, _, binop) in binoptable)...}
 
-@generated function llvm_atomic_op(
+@llvmgenerated builder function llvm_atomic_op(
     binop::AtomicRMWBinOpVal,
     ptr::LLVMPtr{T,A},
     val::T,
     order::LLVMOrderingVal,
-    sync,
-) where {T,A}
-    @dispose ctx = Context() begin
-        T_val = convert(LLVMType, T)
-        T_ptr = convert(LLVMType, ptr)
-
-        T_typed_ptr = LLVM.PointerType(T_val, A)
-
-        llvm_f, _ = create_function(T_val, [T_ptr, T_val])
-        llvm_syncscope = _valueof(sync())
-
-        @dispose builder = IRBuilder() begin
-            entry = BasicBlock(llvm_f, "entry")
-            position!(builder, entry)
-
-            typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
-
-            rv = atomic_rmw!(
-                builder,
-                _valueof(binop()),
-                typed_ptr,
-                parameters(llvm_f)[2],
-                _valueof(order()),
-                SyncScope(string(llvm_syncscope))
-            )
-
-            ret!(builder, rv)
-        end
-
-        call_function(llvm_f, T, Tuple{LLVMPtr{T,A},T}, :ptr, :val)
-    end
+    ::Val{sync},
+)::T where {T,A,sync}
+    typed_ptr = bitcast!(builder, ptr, LLVM.PointerType(convert(LLVMType, T), A))
+    return atomic_rmw!(builder, _valueof(binop), typed_ptr, val, _valueof(order);
+                       scope = String(sync))
 end
 
 @inline function atomic_pointermodify(
@@ -328,88 +272,73 @@ end
     end
 end
 
-@generated function llvm_atomic_cas(
-    ptr::LLVMPtr{T,A},
+@inline function llvm_atomic_cas(
+    ptr::LLVMPtr{T},
     cmp::T,
     val::T,
     success_order::LLVMOrderingVal,
     fail_order::LLVMOrderingVal,
     sync,
-) where {T,A}
-    llvm_success = _valueof(success_order())
-    llvm_fail = _valueof(fail_order())
-    llvm_syncscope = _valueof(sync())
-    @dispose ctx = Context() begin
-        T_val = convert(LLVMType, T)
-        T_pointee = T_val
-        if T_val isa LLVM.FloatingPointType
-            T_pointee = LLVM.IntType(sizeof(T) * 8)
-        end
-        T_ptr = convert(LLVMType, ptr)
-        T_success = convert(LLVMType, Ptr{Int8})
-
-        T_typed_ptr = LLVM.PointerType(T_pointee, A)
-        T_ok_ptr = LLVM.PointerType(convert(LLVMType, Int8))
-
-        llvm_f, _ = create_function(T_val, [T_ptr, T_val, T_val, T_success])
-
-        @dispose builder = IRBuilder() begin
-            entry = BasicBlock(llvm_f, "entry")
-            position!(builder, entry)
-
-            typed_ptr = bitcast!(builder, parameters(llvm_f)[1], T_typed_ptr)
-            ok_ptr = inttoptr!(builder, parameters(llvm_f)[4], T_ok_ptr)
-
-            cmp_int = parameters(llvm_f)[2]
-            if T_val isa LLVM.FloatingPointType
-                cmp_int = bitcast!(builder, cmp_int, T_pointee)
-            end
-
-            val_int = parameters(llvm_f)[3]
-            if T_val isa LLVM.FloatingPointType
-                val_int = bitcast!(builder, val_int, T_pointee)
-            end
-
-            res = atomic_cmpxchg!(
-                builder,
-                typed_ptr,
-                cmp_int,
-                val_int,
-                llvm_success,
-                llvm_fail,
-                SyncScope(string(llvm_syncscope)),
-            )
-
-            rv = extract_value!(builder, res, 0)
-            ok = extract_value!(builder, res, 1)
-            ok = zext!(builder, ok, LLVM.Int8Type())
-            store!(builder, ok, ok_ptr)
-
-            if T_val isa LLVM.FloatingPointType
-                rv = bitcast!(builder, rv, T_val)
-            end
-
-            ret!(builder, rv)
-        end
-
-        expr = call_function(
-            llvm_f,
-            T,
-            Tuple{LLVMPtr{T,A},T,T,Ptr{Int8}},
-            :ptr,
-            :cmp,
-            :val,
-            :success_ptr,
-        )
-        quote
-            success = Ref{Int8}()
-            old = GC.@preserve success begin
-                success_ptr = Ptr{Int8}(pointer_from_objref(success))
-                $expr
-            end
-            (; old, success = success[] != zero(Int8))
-        end
+) where {T}
+    success = Ref{Int8}()
+    old = GC.@preserve success begin
+        success_ptr = Ptr{Int8}(pointer_from_objref(success))
+        _llvm_atomic_cas(ptr, cmp, val, success_order, fail_order, sync, success_ptr)
     end
+    (; old, success = success[] != zero(Int8))
+end
+
+@llvmgenerated builder function _llvm_atomic_cas(
+    ptr::LLVMPtr{T,A},
+    cmp::T,
+    val::T,
+    ::Val{success_order},
+    ::Val{fail_order},
+    ::Val{sync},
+    success_ptr::Ptr{Int8},
+)::T where {T,A,success_order,fail_order,sync}
+    T_val = convert(LLVMType, T)
+    T_pointee = T_val
+    if T_val isa LLVM.FloatingPointType
+        T_pointee = LLVM.IntType(sizeof(T) * 8)
+    end
+
+    typed_ptr = bitcast!(builder, ptr, LLVM.PointerType(T_pointee, A))
+    # before Julia 1.12, `llvmcall` passes a `Ptr` as an integer
+    T_ok_ptr = LLVM.PointerType(LLVM.Int8Type())
+    ok_ptr = success_ptr.value_type isa LLVM.IntegerType ?
+             inttoptr!(builder, success_ptr, T_ok_ptr) : success_ptr
+
+    cmp_int = cmp
+    if T_val isa LLVM.FloatingPointType
+        cmp_int = bitcast!(builder, cmp_int, T_pointee)
+    end
+
+    val_int = val
+    if T_val isa LLVM.FloatingPointType
+        val_int = bitcast!(builder, val_int, T_pointee)
+    end
+
+    res = atomic_cmpxchg!(
+        builder,
+        typed_ptr,
+        cmp_int,
+        val_int,
+        success_order,
+        fail_order;
+        scope = String(sync),
+    )
+
+    rv = extract_value!(builder, res, 0)
+    ok = extract_value!(builder, res, 1)
+    ok = zext!(builder, ok, LLVM.Int8Type())
+    store!(builder, ok, ok_ptr)
+
+    if T_val isa LLVM.FloatingPointType
+        rv = bitcast!(builder, rv, T_val)
+    end
+
+    return rv
 end
 
 @inline function atomic_pointerreplace(
