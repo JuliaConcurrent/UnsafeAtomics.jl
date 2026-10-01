@@ -64,29 +64,31 @@ See also: `replaceproperty!`, `replacefield!`
 """
 atomic_pointerreplace
 
-const _llvm_from_julia_ordering = (
-    not_atomic = LLVM.API.LLVMAtomicOrderingNotAtomic,
-    unordered = LLVM.API.LLVMAtomicOrderingUnordered,
-    monotonic = LLVM.API.LLVMAtomicOrderingMonotonic,
-    acquire = LLVM.API.LLVMAtomicOrderingAcquire,
-    release = LLVM.API.LLVMAtomicOrderingRelease,
-    acquire_release = LLVM.API.LLVMAtomicOrderingAcquireRelease,
-    sequentially_consistent = LLVM.API.LLVMAtomicOrderingSequentiallyConsistent,
+# Julia's names of the orderings, which LLVM.jl also knows
+const _julia_orderings = (
+    :not_atomic,
+    :unordered,
+    :monotonic,
+    :acquire,
+    :release,
+    :acquire_release,
+    :sequentially_consistent,
 )
 
-_julia_ordering(p) =
-    Union{map(x -> p(x) ? Val{x} : Union{}, keys(_llvm_from_julia_ordering))...}
+_llvm_ordering(julia::Symbol) = parse(LLVM.AtomicOrdering.T, String(julia))
+
+_julia_ordering(p) = Union{map(x -> p(x) ? Val{x} : Union{}, _julia_orderings)...}
 
 const AllOrdering = _julia_ordering(_ -> true)
 const AtomicOrdering = _julia_ordering(!=(:not_atomic))
 
-const LLVMOrderingVal = Union{map(x -> Val{x}, values(_llvm_from_julia_ordering))...}
+const LLVMOrderingVal = Union{map(x -> Val{_llvm_ordering(x)}, _julia_orderings)...}
 
 is_stronger_than_monotonic(order::Symbol) =
     !(order === :monotonic || order === :unordered || order === :not_atomic)
 
-for (julia, llvm) in pairs(_llvm_from_julia_ordering)
-    @eval llvm_from_julia_ordering(::Val{$(QuoteNode(julia))}) = Val{$llvm}()
+for julia in _julia_orderings
+    @eval llvm_from_julia_ordering(::Val{$(QuoteNode(julia))}) = Val{$(_llvm_ordering(julia))}()
 end
 
 _valueof(::Val{x}) where {x} = x
@@ -98,7 +100,7 @@ end
 
 # Non-atomic accesses don't have a synchronization scope.
 access_scope(order, scope) =
-    order == LLVM.API.LLVMAtomicOrderingNotAtomic ? nothing : String(scope)
+    order == LLVM.AtomicOrdering.NotAtomic ? nothing : String(scope)
 
 @llvmgenerated builder function llvm_atomic_load(
     ptr::LLVMPtr{T,A},
@@ -161,24 +163,26 @@ end
 
 right(_, r) = r
 
+# the `atomicrmw` operations, by their name in LLVM IR
 const binoptable = [
-    (:xchg, right, LLVM.API.LLVMAtomicRMWBinOpXchg),
-    (:add, +, LLVM.API.LLVMAtomicRMWBinOpAdd),
-    (:sub, -, LLVM.API.LLVMAtomicRMWBinOpSub),
-    (:and, &, LLVM.API.LLVMAtomicRMWBinOpAnd),
-    (:or, |, LLVM.API.LLVMAtomicRMWBinOpOr),
-    (:xor, xor, LLVM.API.LLVMAtomicRMWBinOpXor),
-    (:max, max, LLVM.API.LLVMAtomicRMWBinOpMax),
-    (:min, min, LLVM.API.LLVMAtomicRMWBinOpMin),
-    (:umax, max, LLVM.API.LLVMAtomicRMWBinOpUMax),
-    (:umin, min, LLVM.API.LLVMAtomicRMWBinOpUMin),
-    (:fadd, +, LLVM.API.LLVMAtomicRMWBinOpFAdd),
-    (:fsub, -, LLVM.API.LLVMAtomicRMWBinOpFSub),
-    (:fmax, max, LLVM.API.LLVMAtomicRMWBinOpFMax),
-    (:fmin, min, LLVM.API.LLVMAtomicRMWBinOpFMin),
+    (:xchg, right),
+    (:add, +),
+    (:sub, -),
+    (:and, &),
+    (:or, |),
+    (:xor, xor),
+    (:max, max),
+    (:min, min),
+    (:umax, max),
+    (:umin, min),
+    (:fadd, +),
+    (:fsub, -),
+    (:fmax, max),
+    (:fmin, min),
 ]
 
-const AtomicRMWBinOpVal = Union{(Val{binop} for (_, _, binop) in binoptable)...}
+const AtomicRMWBinOpVal =
+    Union{(Val{parse(LLVM.AtomicRMWBinOp.T, String(name))} for (name, _) in binoptable)...}
 
 @llvmgenerated builder function llvm_atomic_op(
     binop::AtomicRMWBinOpVal,
@@ -200,7 +204,7 @@ end
     sync::Val{S}
 ) where {T, S}
     old = llvm_atomic_op(
-        Val(LLVM.API.LLVMAtomicRMWBinOpXchg),
+        Val(LLVM.AtomicRMWBinOp.Xchg),
         ptr,
         x,
         llvm_from_julia_ordering(order),
@@ -225,8 +229,9 @@ const atomictypes = Any[
     Float64,
 ]
 
-for (opname, op, llvmop) in binoptable
+for (opname, op) in binoptable
     opname === :xchg && continue
+    llvmop = parse(LLVM.AtomicRMWBinOp.T, String(opname))
     types = if opname in (:min, :max)
         filter(t -> t <: Signed, atomictypes)
     elseif opname in (:umin, :umax)
