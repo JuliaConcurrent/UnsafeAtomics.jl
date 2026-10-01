@@ -127,6 +127,7 @@ target has to support it: e.g., LLVM's AArch64 back-end can't compile `uinc_wrap
   LLVM IR.
 - `fence(seq_cst)` is a plain `fence` instruction, like `Threads.atomic_fence()`. Before LLVM
   20 (Julia 1.12), it's `mfence` on x86_64, instead of a locked `or`.
-- The `LLVMPtr` methods are part of the package; they no longer need LLVM.jl.
+- The `LLVMPtr` methods are part of the package instead of an extension: UnsafeAtomics depends
+  on LLVM.jl 10, which it uses to generate the instructions.
 - The functions are only defined for `Ptr` and `Core.LLVMPtr`, and invalid arguments throw a
   `ConcurrencyViolationError` or an `ArgumentError`.
