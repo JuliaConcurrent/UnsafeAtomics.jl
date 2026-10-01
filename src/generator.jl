@@ -344,3 +344,14 @@ end
 @generated llvm_fetch_modify!(
     ptr::AnyPtr{T}, op, x::T, order::Val{o}, scope::Val, volatile::Val, align::Val, md::Val,
 ) where {T,o} = generate(modify_ir, T, op, o, true)
+
+# Compile the generators, which use LLVM.jl, as part of the package image.
+let P = LLVMPtr{Int32,1}, F = LLVMPtr{Float32,1}
+    md = ((:mmra, ((:a, :b),)),)
+    fence_ir(:seq_cst, :device, md)
+    load_ir(P, Int32, :monotonic, :device, false, 4, md)
+    store_ir(P, Int32, :monotonic, :device, false, 4, md)
+    rmw_ir(P, Int32, :add, :monotonic, :device, false, 4, md)
+    cmpxchg_ir(P, Int32, :monotonic, :monotonic, :device, false, false, 4, md)
+    cmpxchg_ir(F, Float32, :monotonic, :monotonic, :system, false, false, 4, ())
+end
