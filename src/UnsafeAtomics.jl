@@ -37,7 +37,6 @@ function sub_sat end
 
 module Internal
 
-using Base: llvmcall
 using Core: LLVMPtr
 
 using LLVM, LLVM.IR, LLVM.Build
