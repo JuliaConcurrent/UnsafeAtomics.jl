@@ -3,8 +3,9 @@ module TestCore
 using UnsafeAtomics: UnsafeAtomics, unordered, monotonic, acquire, release, acq_rel, seq_cst, right
 using UnsafeAtomics: none, singlethread
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
-using InteractiveUtils: code_llvm
+using InteractiveUtils: code_llvm, code_typed
 using Test
+using Base: ConcurrencyViolationError
 
 using ..Bits
 
@@ -23,7 +24,7 @@ end
 
 rmw_table_for(@nospecialize T) =
     if T <: AbstractFloat
-        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (+, -))
+        ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (+, -, max, min))
     elseif T <: AbstractBits
         ((op, rmwop) for (op, rmwop) in OP_RMW_TABLE if op in (right,))
     else
@@ -136,6 +137,131 @@ function test_explicit_syncscope()
     UnsafeAtomics.fence(seq_cst, none)
 end
 
+llvm_ir(f, types) = sprint(io -> code_llvm(io, f, types; debuginfo = :none))
+
+scoped_load(ptr) = UnsafeAtomics.load(ptr, acquire, singlethread)
+scoped_store!(ptr, x) = UnsafeAtomics.store!(ptr, x, release, singlethread)
+scoped_cas!(ptr, cmp, new) = UnsafeAtomics.cas!(ptr, cmp, new, acq_rel, acquire, singlethread)
+scoped_add!(ptr, x) = UnsafeAtomics.add!(ptr, x, acq_rel, singlethread)
+
+function test_syncscope_is_emitted()
+    # Values alone can't tell whether the scope made it into the instruction.
+    @testset for T in [Int32, UInt64, Float64]
+        P = Ptr{T}
+        scope = raw"syncscope\(\"singlethread\"\)"
+        @test occursin(Regex("load atomic .* $scope acquire"), llvm_ir(scoped_load, Tuple{P}))
+        @test occursin(Regex("store atomic .* $scope release"), llvm_ir(scoped_store!, Tuple{P,T}))
+        @test occursin(Regex("cmpxchg .* $scope acq_rel acquire"), llvm_ir(scoped_cas!, Tuple{P,T,T}))
+        @test occursin(Regex("atomicrmw f?add .* $scope acq_rel"), llvm_ir(scoped_add!, Tuple{P,T}))
+    end
+end
+
+function test_unsupported_arguments()
+    # These used to recurse in the `as_native_uint` fallbacks until the stack overflowed.
+    unsupported_scope = UnsafeAtomics.Internal.LLVMSyncScope{:workgroup}()
+    @testset for T in [Int32, Float32]
+        xs = T[1, 2]
+        ptr = pointer(xs, 1)
+        GC.@preserve xs begin
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, release)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, acq_rel)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.store!(ptr, T(3), acquire)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.store!(ptr, T(3), acq_rel)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(
+                ptr, T(1), T(3), unordered, monotonic)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(
+                ptr, T(1), T(3), seq_cst, release)
+            @test_throws ArgumentError UnsafeAtomics.load(ptr, monotonic, unsupported_scope)
+            @test_throws ArgumentError UnsafeAtomics.store!(
+                ptr, T(3), monotonic, unsupported_scope)
+            @test_throws ArgumentError UnsafeAtomics.cas!(
+                ptr, T(1), T(3), monotonic, monotonic, unsupported_scope)
+            @test xs == T[1, 2]
+        end
+    end
+end
+
+function test_unordered_rmw()
+    # atomicrmw can't be unordered; this used to fail to parse the generated IR.
+    @testset for T in [Int32, Float64]
+        xs = T[1, 2]
+        ptr = pointer(xs, 1)
+        GC.@preserve xs begin
+            @test_throws ConcurrencyViolationError UnsafeAtomics.add!(ptr, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.xchg!(ptr, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.max!(ptr, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.modify!(ptr, *, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.add!(
+                ptr, T(1), unordered, singlethread)
+            @test xs == T[1, 2]
+        end
+    end
+end
+
+function test_failure_order()
+    failure_order = UnsafeAtomics.Internal.failure_order
+    @test failure_order(monotonic) === monotonic
+    @test failure_order(acquire) === acquire
+    @test failure_order(release) === monotonic
+    @test failure_order(acq_rel) === acquire
+    @test failure_order(seq_cst) === seq_cst
+end
+
+cas_acq_rel!(ptr, cmp, new) = UnsafeAtomics.cas!(ptr, cmp, new, acq_rel)
+
+function test_cas_single_ordering()
+    # A single ordering used to be taken as the failure ordering as well, which is
+    # invalid for release and acq_rel.
+    @testset for T in [Int32, Float64], ord in [monotonic, acquire, release, acq_rel, seq_cst]
+        xs = T[1, 2]
+        ptr = pointer(xs, 1)
+        GC.@preserve xs begin
+            @test UnsafeAtomics.cas!(ptr, T(1), T(3), ord) === (old = T(1), success = true)
+            @test UnsafeAtomics.cas!(ptr, T(1), T(4), ord) === (old = T(3), success = false)
+            @test xs[1] === T(3)
+        end
+    end
+    @test occursin(r"cmpxchg .* acq_rel acquire", llvm_ir(cas_acq_rel!, Tuple{Ptr{Int32},Int32,Int32}))
+end
+
+scoped_max!(ptr, x) = UnsafeAtomics.max!(ptr, x, acq_rel, singlethread)
+
+function test_cas_loop_fallback()
+    # Operations without an atomicrmw instruction used to be a MethodError on Ptr.
+    xs = Float32[1, 2]
+    ptr = pointer(xs, 1)
+    GC.@preserve xs begin
+        @test UnsafeAtomics.modify!(ptr, max, 3f0) === (1f0 => 3f0)
+        @test UnsafeAtomics.modify!(ptr, min, -0f0, acquire) === (3f0 => -0f0)
+        @test UnsafeAtomics.modify!(ptr, max, 0f0, release, singlethread) === (-0f0 => 0f0)
+        # Julia's `max` propagates NaN, unlike LLVM's `atomicrmw fmax`.
+        @test UnsafeAtomics.modify!(ptr, max, NaN32) === (0f0 => NaN32)
+        @test xs[1] === NaN32
+        @test UnsafeAtomics.min!(ptr, 1f0) === NaN32
+        @test isnan(xs[1])
+    end
+
+    ys = Int32[3, 4]
+    ptr = pointer(ys, 1)
+    GC.@preserve ys begin
+        @test UnsafeAtomics.modify!(ptr, *, Int32(2)) === (Int32(3) => Int32(6))
+        @test UnsafeAtomics.modify!(ptr, (a, b) -> a ÷ b, Int32(4), monotonic) ===
+              (Int32(6) => Int32(1))
+        @test ys == Int32[1, 4]
+    end
+
+    bs = [false, false]
+    ptr = pointer(bs, 1)
+    GC.@preserve bs begin
+        @test UnsafeAtomics.modify!(ptr, |, true) === (false => true)
+        @test UnsafeAtomics.xor!(ptr, true, acq_rel) === true
+        @test bs == [false, false]
+    end
+
+    @test occursin(r"cmpxchg .* syncscope\(\"singlethread\"\) acq_rel monotonic",
+                   llvm_ir(scoped_max!, Tuple{Ptr{Float64},Float64}))
+end
+
 barrier_acquire() = (UnsafeAtomics.fence(acquire); nothing)
 barrier_release() = (UnsafeAtomics.fence(release); nothing)
 barrier_acq_rel() = (UnsafeAtomics.fence(acq_rel); nothing)
@@ -165,6 +291,24 @@ function test_fence_unordered_error()
     # 1.11 miscompiled when the error was caught, corrupting memory.
     @test catch_fence(unordered) isa Base.ConcurrencyViolationError
     @test catch_fence(monotonic) === nothing
+end
+
+function test_cpu_seq_cst_fence()
+    # GPU back-ends overlay this hook, so it must exist on every host.
+    hook = UnsafeAtomics.Internal.cpu_seq_cst_fence
+    @test hook() === nothing
+    @test occursin(r"^\s*fence seq_cst"m, llvm_ir(hook, Tuple{})) ||
+          occursin("asm sideeffect", llvm_ir(hook, Tuple{}))
+
+    # The x86_64 inline assembly must only be reachable through the hook, and only
+    # before LLVM 20, which emits the same instruction for a plain fence.
+    src, _ = only(code_typed(UnsafeAtomics.fence, Tuple{typeof(seq_cst),typeof(none)};
+                             optimize = false))
+    @test occursin("cpu_seq_cst_fence", string(src)) ==
+          (Sys.ARCH === :x86_64 && Base.libllvm_version < v"20")
+    if Base.libllvm_version >= v"20"
+        @test !occursin("asm sideeffect", llvm_ir(barrier_seq_cst, Tuple{}))
+    end
 end
 
 function test_fence_weak_orderings()

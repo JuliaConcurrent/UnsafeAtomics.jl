@@ -6,8 +6,8 @@
 
 @inline UnsafeAtomics.load(x, ord) = UnsafeAtomics.load(x, ord, none)
 @inline UnsafeAtomics.store!(x, v, ord) = UnsafeAtomics.store!(x, v, ord, none)
-@inline UnsafeAtomics.cas!(x, cmp, new, ord) = UnsafeAtomics.cas!(x, cmp, new, ord, ord, none)
-@inline UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_order) = UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_order, none)
+@inline UnsafeAtomics.cas!(x, cmp, new, ord) = UnsafeAtomics.cas!(x, cmp, new, ord, failure_order(ord), none)
+@inline UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_ord) = UnsafeAtomics.cas!(x, cmp, new, success_ord, failure_ord, none)
 @inline UnsafeAtomics.modify!(ptr, op, x, ord) = UnsafeAtomics.modify!(ptr, op, x, ord, none)
 @inline UnsafeAtomics.fence(ord) = UnsafeAtomics.fence(ord, none)
 
@@ -94,7 +94,7 @@ for typ in (inttypes..., floattypes...)
                     return llvmcall(
                         $("""
                         %ptr = $(inttoptr(lt, "%0"))
-                        %rv = load atomic $rt %ptr $ord, align $(sizeof(typ))
+                        %rv = load atomic $rt %ptr $sync $ord, align $(sizeof(typ))
                         ret $lt %rv
                         """),
                         $typ,
@@ -120,7 +120,7 @@ for typ in (inttypes..., floattypes...)
                     return llvmcall(
                         $("""
                         %ptr = $(inttoptr(lt, "%0"))
-                        store atomic $lt %1, $(ptr(lt)) %ptr $ord, align $(sizeof(typ))
+                        store atomic $lt %1, $(ptr(lt)) %ptr $sync $ord, align $(sizeof(typ))
                         ret void
                         """),
                         Cvoid,
@@ -171,7 +171,7 @@ for typ in (inttypes..., floattypes...)
                             $(
                                 """
                                 %ptr = $(inttoptr(lt, "%0"))
-                                %rs = cmpxchg $(ptr(lt)) %ptr, $lt %1, $lt %2 $success_ordering $failure_ordering
+                                %rs = cmpxchg $(ptr(lt)) %ptr, $lt %1, $lt %2 $sync $success_ordering $failure_ordering
                                 %rv = extractvalue { $lt, i1 } %rs, 0
                                 %s1 = extractvalue { $lt, i1 } %rs, 1
                                 %s8 = zext i1 %s1 to i8
@@ -211,6 +211,7 @@ for typ in (inttypes..., floattypes...)
             end
         end
         for ord in orderings
+            ord === unordered && continue  # atomicrmw can't be unordered
             for sync in syncscopes
                 # Enable this code iff https://github.com/JuliaLang/julia/pull/45122 get's merged
                 if false && ATOMIC_INTRINSICS && sizeof(typ) <= MAX_POINTERATOMIC_SIZE && sync == none
@@ -234,7 +235,7 @@ for typ in (inttypes..., floattypes...)
                         old = llvmcall(
                             $("""
                             %ptr = $(inttoptr(lt, "%0"))
-                            %rv = atomicrmw $rmw $(ptr(lt)) %ptr, $lt %1 $ord
+                            %rv = atomicrmw $rmw $(ptr(lt)) %ptr, $lt %1 $sync $ord
                             ret $lt %rv
                             """),
                             $typ,
@@ -267,6 +268,29 @@ const FENCE_INTRINSIC_ELIDABLE =
 @noinline throw_invalid_ordering() =
     throw(Base.ConcurrencyViolationError("invalid atomic ordering"))
 
+# Before LLVM 20, a seq_cst fence on x86_64 lowers to `mfence`, which is slow on AMD CPUs.
+# Emit a locked `or` instead, like LLVM does since llvm/llvm-project#106555.
+const X86_FENCE_WORKAROUND = Sys.ARCH == :x86_64 && Base.libllvm_version < v"20"
+
+# The system-scope seq_cst fence on the host CPU. GPU back-ends overlay this function with a
+# plain `fence seq_cst`, as the x86 assembly below must not end up in device code.
+if X86_FENCE_WORKAROUND
+    @inline cpu_seq_cst_fence() = Base.llvmcall(
+        (raw"""
+        define void @fence() #0 {
+        entry:
+            tail call void asm sideeffect "lock orq $$0 , (%rsp)", ""(); should this have ~{memory}
+            ret void
+        }
+        attributes #0 = { alwaysinline }
+        """, "fence"), Nothing, Tuple{})
+else
+    @inline cpu_seq_cst_fence() = llvmcall("""
+        fence seq_cst
+        ret void
+        """, Cvoid, Tuple{})
+end
+
 for sync in syncscopes
     if sync == none
         if !FENCE_INTRINSIC_ELIDABLE
@@ -291,7 +315,7 @@ for sync in syncscopes
                     @eval UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync))) = nothing
                 elseif ord === unordered
                     # defined below
-                elseif ord === seq_cst && Sys.ARCH == :x86_64
+                elseif ord === seq_cst && X86_FENCE_WORKAROUND
                     # defined by the x86_64 special case below
                 else
                     @eval function UnsafeAtomics.fence(::$(typeof(ord)), ::$(typeof(sync)))
@@ -312,21 +336,8 @@ for sync in syncscopes
         # miscompiles when the error is caught. A call that always throws can't be elided.
         @eval UnsafeAtomics.fence(::typeof(unordered), ::$(typeof(sync))) =
             throw_invalid_ordering()
-        if Sys.ARCH == :x86_64
-            # FIXME: Disable this once on LLVM 19
-            # This is unfortunatly required for good-performance on AMD
-            # https://github.com/llvm/llvm-project/pull/106555
-            @eval function UnsafeAtomics.fence(::typeof(seq_cst), ::$(typeof(sync)))
-                Base.llvmcall(
-                    (raw"""
-                    define void @fence() #0 {
-                    entry:
-                        tail call void asm sideeffect "lock orq $$0 , (%rsp)", ""(); should this have ~{memory}
-                        ret void
-                    }
-                    attributes #0 = { alwaysinline }
-                    """, "fence"), Nothing, Tuple{})
-            end
+        if X86_FENCE_WORKAROUND
+            @eval UnsafeAtomics.fence(::typeof(seq_cst), ::$(typeof(sync))) = cpu_seq_cst_fence()
         end
     else
         for ord in orderings
@@ -359,21 +370,51 @@ as_native_uint(::Type{T}) where {T} =
         error(LazyString("unsupported size: ", sizeof(T)))
     end
 
+const LOAD_ORDERINGS = (unordered, monotonic, acquire, seq_cst)
+const STORE_ORDERINGS = (unordered, monotonic, release, seq_cst)
+const RMW_ORDERINGS = (monotonic, acquire, release, acq_rel, seq_cst)
+const CAS_SUCCESS_ORDERINGS = (monotonic, acquire, release, acq_rel, seq_cst)
+const CAS_FAILURE_ORDERINGS = (monotonic, acquire, seq_cst)
+
+# The fallbacks below retry with a same-sized unsigned integer. If `T` already is that
+# integer, no specialized method matched: report why, instead of recursing forever.
+@noinline function throw_unsupported(::Type{T}, syncscope, valid_ordering::Bool) where {T}
+    valid_ordering || throw_invalid_ordering()
+    syncscope in syncscopes ||
+        throw(ArgumentError(string("unsupported syncscope: ", repr(syncscope))))
+    throw(ArgumentError(string("unsupported atomic type: ", T)))
+end
+
 function UnsafeAtomics.load(x::Ptr{T}, ordering, syncscope) where {T}
     UI = as_native_uint(T)
+    UI === T && throw_unsupported(T, syncscope, ordering in LOAD_ORDERINGS)
     v = UnsafeAtomics.load(Ptr{UI}(x), ordering, syncscope)
     return bitcast(T, v)
 end
 
 function UnsafeAtomics.store!(x::Ptr{T}, v::T, ordering, syncscope) where {T}
     UI = as_native_uint(T)
+    UI === T && throw_unsupported(T, syncscope, ordering in STORE_ORDERINGS)
     UnsafeAtomics.store!(Ptr{UI}(x), bitcast(UI, v), ordering, syncscope)::Nothing
 end
 
 function UnsafeAtomics.modify!(x::Ptr{T}, ::typeof(right), v::T, ordering, syncscope) where {T}
     UI = as_native_uint(T)
+    UI === T && throw_unsupported(T, syncscope, ordering in RMW_ORDERINGS)
     old, _ = UnsafeAtomics.modify!(Ptr{UI}(x), right, bitcast(UI, v), ordering, syncscope)
     return bitcast(T, old) => v
+end
+
+# Operations without an atomicrmw instruction for `T` (e.g. `max` on floats, or any other
+# function) retry a cmpxchg until no other thread modified the value in between.
+@inline function UnsafeAtomics.modify!(x::Ptr{T}, op::OP, v::T, ordering, syncscope) where {T,OP}
+    ordering in RMW_ORDERINGS || throw_invalid_ordering()
+    old = UnsafeAtomics.load(x, monotonic, syncscope)
+    while true
+        new = op(old, v)
+        (old, success) = UnsafeAtomics.cas!(x, old, new, ordering, monotonic, syncscope)
+        success && return old => new
+    end
 end
 
 function UnsafeAtomics.cas!(
@@ -385,6 +426,11 @@ function UnsafeAtomics.cas!(
     syncscope,
 ) where {T}
     UI = as_native_uint(T)
+    UI === T && throw_unsupported(
+        T,
+        syncscope,
+        success_ordering in CAS_SUCCESS_ORDERINGS && failure_ordering in CAS_FAILURE_ORDERINGS,
+    )
     (old, success) = UnsafeAtomics.cas!(
         Ptr{UI}(x),
         bitcast(UI, cmp),
