@@ -1,7 +1,7 @@
 module TestCore
 
 using UnsafeAtomics: UnsafeAtomics, unordered, monotonic, acquire, release, acq_rel, seq_cst, right
-using UnsafeAtomics: none, singlethread
+using UnsafeAtomics: none, singlethread, subgroup, workgroup, device, system, SyncScope
 using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
 using InteractiveUtils: code_llvm, code_typed
 using Test
@@ -139,26 +139,54 @@ end
 
 llvm_ir(f, types) = sprint(io -> code_llvm(io, f, types; debuginfo = :none))
 
-scoped_load(ptr) = UnsafeAtomics.load(ptr, acquire, singlethread)
-scoped_store!(ptr, x) = UnsafeAtomics.store!(ptr, x, release, singlethread)
-scoped_cas!(ptr, cmp, new) = UnsafeAtomics.cas!(ptr, cmp, new, acq_rel, acquire, singlethread)
-scoped_add!(ptr, x) = UnsafeAtomics.add!(ptr, x, acq_rel, singlethread)
+scoped_load(ptr, scope) = UnsafeAtomics.load(ptr, acquire, scope)
+scoped_store!(ptr, x, scope) = UnsafeAtomics.store!(ptr, x, release, scope)
+scoped_cas!(ptr, cmp, new, scope) = UnsafeAtomics.cas!(ptr, cmp, new, acq_rel, acquire, scope)
+scoped_add!(ptr, x, scope) = UnsafeAtomics.add!(ptr, x, acq_rel, scope)
+
+const SCOPES = [singlethread, subgroup, workgroup, device, system, SyncScope(:agent)]
+
+# The line of `ir` with the atomic instruction, which must mention the right scope.
+function scoped_instruction(ir, instruction, scope)
+    line = only(filter(contains(instruction), split(ir, '\n')))
+    if scope === system
+        return !occursin("syncscope", line)
+    else
+        return occursin("syncscope(\"$(UnsafeAtomics.Internal.llvm_syncscope(scope))\")", line)
+    end
+end
 
 function test_syncscope_is_emitted()
     # Values alone can't tell whether the scope made it into the instruction.
-    @testset for T in [Int32, UInt64, Float64]
-        P = Ptr{T}
-        scope = raw"syncscope\(\"singlethread\"\)"
-        @test occursin(Regex("load atomic .* $scope acquire"), llvm_ir(scoped_load, Tuple{P}))
-        @test occursin(Regex("store atomic .* $scope release"), llvm_ir(scoped_store!, Tuple{P,T}))
-        @test occursin(Regex("cmpxchg .* $scope acq_rel acquire"), llvm_ir(scoped_cas!, Tuple{P,T,T}))
-        @test occursin(Regex("atomicrmw f?add .* $scope acq_rel"), llvm_ir(scoped_add!, Tuple{P,T}))
+    @testset for T in [Int32, UInt64, Float64], scope in SCOPES
+        P, S = Ptr{T}, typeof(scope)
+        @test scoped_instruction(llvm_ir(scoped_load, Tuple{P,S}), r"load atomic .* acquire", scope)
+        @test scoped_instruction(llvm_ir(scoped_store!, Tuple{P,T,S}), r"store atomic .* release", scope)
+        @test scoped_instruction(llvm_ir(scoped_cas!, Tuple{P,T,T,S}), r"cmpxchg .* acq_rel acquire", scope)
+        @test scoped_instruction(llvm_ir(scoped_add!, Tuple{P,T,S}), r"atomicrmw f?add .* acq_rel", scope)
+    end
+end
+
+function test_explicit_scopes()
+    @testset for scope in SCOPES
+        xs = Int32[1, 2]
+        ptr = pointer(xs, 1)
+        GC.@preserve xs begin
+            @test UnsafeAtomics.load(ptr, acquire, scope) === Int32(1)
+            UnsafeAtomics.store!(ptr, Int32(2), release, scope)
+            @test UnsafeAtomics.cas!(ptr, Int32(2), Int32(3), acq_rel, acquire, scope) ===
+                  (old = Int32(2), success = true)
+            @test UnsafeAtomics.add!(ptr, Int32(1), acq_rel, scope) === Int32(3)
+            @test UnsafeAtomics.max!(ptr, Int32(7), monotonic, scope) === Int32(4)
+            @test UnsafeAtomics.modify!(ptr, *, Int32(2), seq_cst, scope) === (Int32(7) => Int32(14))
+            @test xs == Int32[14, 2]
+        end
     end
 end
 
 function test_unsupported_arguments()
     # These used to recurse in the `as_native_uint` fallbacks until the stack overflowed.
-    unsupported_scope = UnsafeAtomics.Internal.LLVMSyncScope{:workgroup}()
+    unsupported_scope = :workgroup
     @testset for T in [Int32, Float32]
         xs = T[1, 2]
         ptr = pointer(xs, 1)
@@ -309,6 +337,23 @@ function test_cpu_seq_cst_fence()
     if Base.libllvm_version >= v"20"
         @test !occursin("asm sideeffect", llvm_ir(barrier_seq_cst, Tuple{}))
     end
+end
+
+scoped_fence(ord, scope) = (UnsafeAtomics.fence(ord, scope); nothing)
+
+function test_scoped_fences()
+    @testset for scope in filter(!=(system), SCOPES), ord in [acquire, release, acq_rel, seq_cst]
+        @test UnsafeAtomics.fence(ord, scope) === nothing
+        ir = llvm_ir(scoped_fence, Tuple{typeof(ord),typeof(scope)})
+        name = UnsafeAtomics.Internal.llvm_syncscope(scope)
+        @test occursin("fence syncscope(\"$name\") $ord", ir)
+    end
+    @testset for scope in SCOPES
+        @test UnsafeAtomics.fence(monotonic, scope) === nothing
+        @test_throws ConcurrencyViolationError UnsafeAtomics.fence(unordered, scope)
+    end
+    # the name is escaped in the IR
+    @test UnsafeAtomics.fence(acquire, SyncScope(Symbol("a\"b\\c"))) === nothing
 end
 
 function test_fence_weak_orderings()

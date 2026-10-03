@@ -135,6 +135,30 @@ end
         end
     end
 
+    @testset "syncscopes" begin
+        # the LLVMPtr path supports any scope; check that it ends up in the IR
+        scopes = [UnsafeAtomics.singlethread, UnsafeAtomics.subgroup, UnsafeAtomics.workgroup,
+                  UnsafeAtomics.device, UnsafeAtomics.system, UnsafeAtomics.SyncScope(:agent)]
+        @testset for scope in scopes, AS in [0, 1, 3]
+            P = Core.LLVMPtr{Int32,AS}
+            S = typeof(scope)
+            name = UnsafeAtomics.Internal.llvm_syncscope(scope)
+            expected = scope === UnsafeAtomics.system ? r"^((?!syncscope).)*$" :
+                       Regex("syncscope\\(\"$name\"\\)")
+            for (f, types, instruction) in [
+                    ((p, s) -> UnsafeAtomics.load(p, acquire, s), (P, S), "load atomic"),
+                    ((p, x, s) -> UnsafeAtomics.store!(p, x, release, s), (P, Int32, S), "store atomic"),
+                    ((p, c, n, s) -> UnsafeAtomics.cas!(p, c, n, acq_rel, acquire, s), (P, Int32, Int32, S), "cmpxchg"),
+                    ((p, x, s) -> UnsafeAtomics.add!(p, x, acq_rel, s), (P, Int32, S), "atomicrmw add")]
+                ir = sprint(io -> InteractiveUtils.code_llvm(io, f, types; debuginfo = :none))
+                # (without coverage counters, which are `atomicrmw add` on a constant address)
+                line = only(filter(l -> contains(l, instruction) && !contains(l, "inttoptr ("),
+                                   split(ir, '\n')))
+                @test occursin(expected, line)
+            end
+        end
+    end
+
     @testset "Zero-sized types" begin
         @test sizeof(Nothing) == 0
         check_default_ordering([nothing, nothing], nothing, nothing)
