@@ -97,20 +97,10 @@ const X86_FENCE_WORKAROUND = Sys.ARCH == :x86_64 && Base.libllvm_version < v"20"
 # The system-scope seq_cst fence on the host CPU. GPU back-ends overlay this function with a
 # plain `fence seq_cst`, as the x86 assembly below must not end up in device code.
 if X86_FENCE_WORKAROUND
-    @inline cpu_seq_cst_fence() = Base.llvmcall(
-        (raw"""
-        define void @fence() #0 {
-        entry:
-            tail call void asm sideeffect "lock orq $$0 , (%rsp)", ""(); should this have ~{memory}
-            ret void
-        }
-        attributes #0 = { alwaysinline }
-        """, "fence"), Nothing, Tuple{})
+    # should this have a ~{memory} clobber?
+    @inline cpu_seq_cst_fence() = @asmcall("lock orq \$\$0 , (%rsp)", "", true, Nothing, Tuple{})
 else
-    @inline cpu_seq_cst_fence() = llvmcall("""
-        fence seq_cst
-        ret void
-        """, Cvoid, Tuple{})
+    @inline cpu_seq_cst_fence() = llvm_fence(Val(:seq_cst), Val(:system), Val(()))
 end
 
 if !FENCE_INTRINSIC_ELIDABLE
@@ -138,16 +128,8 @@ else
         elseif ord === seq_cst && X86_FENCE_WORKAROUND
             # defined by the x86_64 special case below
         else
-            @eval function system_fence(::$(typeof(ord)))
-                return llvmcall(
-                    $("""
-                    fence $ord
-                    ret void
-                    """),
-                    Cvoid,
-                    Tuple{},
-                )
-            end
+            @eval system_fence(::$(typeof(ord))) =
+                llvm_fence(Val($(QuoteNode(llvm_ordering(ord)))), Val(:system), Val(()))
         end
     end
 end

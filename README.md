@@ -124,6 +124,7 @@ inline assembly for the CPU; GPU back-ends replace it by overlaying
 - The default scope on `Core.LLVMPtr` is `device` instead of `system`.
 - `max` and `min` on floats have Julia's semantics; use `UA.fmax`/`UA.fmin` (`fmax!`/`fmin!`)
   for the hardware's `maxNum`/`minNum`.
-- The `LLVMPtr` methods are part of the package; they no longer need LLVM.jl.
+- The `LLVMPtr` methods are part of the package instead of an extension: UnsafeAtomics depends
+  on LLVM.jl 10, which it uses to generate the instructions.
 - The functions are only defined for `Ptr` and `Core.LLVMPtr`, and invalid arguments throw a
   `ConcurrencyViolationError` or an `ArgumentError`.

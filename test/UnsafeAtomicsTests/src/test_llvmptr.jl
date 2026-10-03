@@ -109,9 +109,10 @@ function check_explicit_ordering(xs::AbstractArray{T}, x1::T, x2::T) where T
 end
 
 
-# The LLVMPtr methods used to live in a package extension that needed LLVM.jl.
-function test_without_llvm()
-    @test !haskey(Base.loaded_modules, Base.PkgId(Base.UUID("929cbde3-209d-540e-8aea-75f648917ca0"), "LLVM"))
+# The LLVMPtr methods used to live in a package extension, which was only loaded with LLVM.jl.
+# UnsafeAtomics now depends on LLVM.jl, and defines them itself.
+function test_without_extension()
+    @test Base.get_extension(UnsafeAtomics, :UnsafeAtomicsLLVM) === nothing
     @test Base.return_types(UnsafeAtomics.add!, (Core.LLVMPtr{Int32,1}, Int32)) == [Int32]
 end
 
