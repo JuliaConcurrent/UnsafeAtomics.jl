@@ -24,16 +24,13 @@ end
 const TYPES = Any[inttypes..., Bool, floattypes..., Ptr{Cvoid}, LLVMPtr{Cvoid,1}, Bits32]
 HAS_BFLOAT16 && push!(TYPES, Core.BFloat16)
 
-# The pointer kinds to run on (the CPU can only access address space 0).
-pointers(xs) = (pointer(xs), reinterpret(LLVMPtr{eltype(xs),0}, pointer(xs)))
-
 const NOMD = Val(())
 
 function test_runtime()
-    @testset for T in TYPES, i in 1:2
+    @testset for T in TYPES, P in POINTER_KINDS
         a, b = values(T)
         xs = T[a, a]
-        p = pointers(xs)[i]
+        p = pointer_to(P, xs)
         al = Val(sizeof(T))
         GC.@preserve xs begin
             @test llvm_load(p, Val(:acquire), Val(:system), Val(false), al, NOMD) === a
@@ -52,7 +49,8 @@ end
 
 function test_runtime_rmw()
     xs = Int32[5, 0]
-    GC.@preserve xs for p in pointers(xs)
+    GC.@preserve xs for P in POINTER_KINDS
+        p = pointer_to(P, xs)
         rmw!(op, x) = llvm_rmw!(p, Val(op), Int32(x), Val(:monotonic), Val(:system), Val(false), Val(4), NOMD)
         xs[1] = 5
         @test rmw!(:add, 3) === Int32(5)
@@ -68,7 +66,8 @@ function test_runtime_rmw()
         @test xs[1] === Int32(0)
     end
     fs = Float32[1, 0]
-    GC.@preserve fs for p in pointers(fs)
+    GC.@preserve fs for P in POINTER_KINDS
+        p = pointer_to(P, fs)
         rmw!(op, x) = llvm_rmw!(p, Val(op), Float32(x), Val(:monotonic), Val(:system), Val(false), Val(4), NOMD)
         fs[1] = 1
         @test rmw!(:fadd, 2) === 1f0
@@ -81,7 +80,8 @@ end
 
 function test_runtime_weak_cmpxchg()
     xs = Int64[1, 0]
-    GC.@preserve xs for p in pointers(xs)
+    GC.@preserve xs for P in POINTER_KINDS
+        p = pointer_to(P, xs)
         xs[1] = 1
         # a weak cmpxchg may fail spuriously
         while !llvm_cmpxchg!(p, 1, 2, Val(:acq_rel), Val(:acquire), Val(:system),
@@ -95,7 +95,8 @@ end
 
 function test_runtime_zero_size()
     xs = [nothing, nothing]
-    GC.@preserve xs for p in pointers(xs)
+    GC.@preserve xs for P in POINTER_KINDS
+        p = pointer_to(P, xs)
         @test llvm_load(p, Val(:seq_cst), Val(:system), Val(false), Val(0), NOMD) === nothing
         @test llvm_store!(p, nothing, Val(:seq_cst), Val(:system), Val(false), Val(0), NOMD) === nothing
         @test llvm_rmw!(p, Val(:xchg), nothing, Val(:acq_rel), Val(:device), Val(false), Val(0), NOMD) === nothing

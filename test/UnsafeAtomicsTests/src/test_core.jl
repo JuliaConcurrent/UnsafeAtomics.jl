@@ -3,23 +3,11 @@ module TestCore
 using UnsafeAtomics: UnsafeAtomics, unordered, monotonic, acquire, release, acq_rel, seq_cst, right
 using UnsafeAtomics: none, singlethread, subgroup, workgroup, device, system, SyncScope
 using UnsafeAtomics.Internal: OP_RMW_TABLE
+using Core: LLVMPtr
 using Test
 using Base: ConcurrencyViolationError
 
 using ..Helpers
-
-function test_default_ordering()
-    @testset for T in inttypes
-        test_default_ordering(T)
-    end
-    @testset for T in floattypes
-        test_default_ordering(T)
-    end
-    @testset for T in (asbits(T) for T in inttypes if T <: Unsigned)
-        test_default_ordering(T)
-    end
-    UnsafeAtomics.fence()
-end
 
 rmw_table_for(@nospecialize T) =
     if T <: AbstractFloat
@@ -38,36 +26,47 @@ const FLOAT_OPS = (UnsafeAtomics.fmax, UnsafeAtomics.fmin)
 const UNSIGNED_OPS = (UnsafeAtomics.inc_wrap, UnsafeAtomics.dec_wrap, UnsafeAtomics.sub_cond,
                       UnsafeAtomics.sub_sat)
 
-function test_default_ordering(T::Type)
+# Every operation, with the given orderings and scope after the operands.
+function check_operations(T, P, load = (), store = (), cas = (), modify = (), rmw = ())
     xs = T[rand(T), rand(T)]
     x1 = rand(T)
     x2 = rand(T)
     @debug "xs=$(repr(xs)) x1=$(repr(x1)) x2=$(repr(x2))"
 
-    ptr = pointer(xs, 1)
+    ptr = pointer_to(P, xs)
     GC.@preserve xs begin
-        @test UnsafeAtomics.load(ptr) === xs[1]
-        UnsafeAtomics.store!(ptr, x1)
+        @test UnsafeAtomics.load(ptr, load...) === xs[1]
+        UnsafeAtomics.store!(ptr, x1, store...)
         @test xs[1] === x1
-        desired = (old = x1, success = true)
-        @test UnsafeAtomics.cas!(ptr, x1, x2) === (old = x1, success = true)
+        @test UnsafeAtomics.cas!(ptr, x1, x2, cas...) === (old = x1, success = true)
         @test xs[1] === x2
         @testset for (op, name) in rmw_table_for(T)
             xs[1] = x1
-            @test UnsafeAtomics.modify!(ptr, op, x2) === (x1 => op(x1, x2))
+            @test UnsafeAtomics.modify!(ptr, op, x2, modify...) === (x1 => op(x1, x2))
             @test xs[1] === op(x1, x2)
 
-            rmw = getfield(UnsafeAtomics, Symbol(name, :!))
+            rmw! = getfield(UnsafeAtomics, Symbol(name, :!))
             xs[1] = x1
-            @test rmw(ptr, x2) === x1
+            @test rmw!(ptr, x2, rmw...) === x1
             @test xs[1] === op(x1, x2)
         end
     end
+    # an atomicrmw instruction, not a compare-and-swap loop
+    T <: Integer && @test occursin("atomicrmw add",
+                                   llvm_ir(UnsafeAtomics.modify!, Tuple{typeof(ptr),typeof(+),T,typeof.(modify)...}))
+end
+
+function test_default_ordering()
+    @testset for T in (inttypes..., floattypes..., (asbits(T) for T in inttypes if T <: Unsigned)...),
+                 P in POINTER_KINDS
+        check_operations(T, P)
+    end
+    UnsafeAtomics.fence()
 end
 
 function test_explicit_ordering()
-    @testset for T in [UInt, Float64]
-        test_explicit_ordering(T)
+    @testset for T in [UInt, Float64], P in POINTER_KINDS
+        check_operations(T, P, (acquire,), (release,), (acq_rel, acquire), (acq_rel,), (acquire,))
     end
     UnsafeAtomics.fence(monotonic)
     UnsafeAtomics.fence(acquire)
@@ -76,66 +75,10 @@ function test_explicit_ordering()
     UnsafeAtomics.fence(seq_cst)
 end
 
-function test_explicit_ordering(T::Type)
-    xs = T[rand(T), rand(T)]
-    x1 = rand(T)
-    x2 = rand(T)
-    @debug "xs=$(repr(xs)) x1=$(repr(x1)) x2=$(repr(x2))"
-
-    ptr = pointer(xs, 1)
-    GC.@preserve xs begin
-
-        @test UnsafeAtomics.load(ptr, acquire) === xs[1]
-        UnsafeAtomics.store!(ptr, x1, release)
-        @test xs[1] === x1
-        desired = (old = x1, success = true)
-        @test UnsafeAtomics.cas!(ptr, x1, x2, acq_rel, acquire) === desired
-        @test xs[1] === x2
-        @testset for (op, name) in rmw_table_for(T)
-            xs[1] = x1
-            @test UnsafeAtomics.modify!(ptr, op, x2, acq_rel) === (x1 => op(x1, x2))
-            @test xs[1] === op(x1, x2)
-
-            rmw = getfield(UnsafeAtomics, Symbol(name, :!))
-            xs[1] = x1
-            @test rmw(ptr, x2, acquire) === x1
-            @test xs[1] === op(x1, x2)
-        end
-    end
-end
-
-function test_explicit_syncscope(T::Type)
-    xs = T[rand(T), rand(T)]
-    x1 = rand(T)
-    x2 = rand(T)
-    @debug "xs=$(repr(xs)) x1=$(repr(x1)) x2=$(repr(x2))"
-
-    ptr = pointer(xs, 1)
-    GC.@preserve xs begin
-
-        @test UnsafeAtomics.load(ptr, acquire, none) === xs[1]
-        @test UnsafeAtomics.load(ptr, acquire, singlethread) === xs[1]
-        UnsafeAtomics.store!(ptr, x1, release, singlethread)
-        @test xs[1] === x1
-        desired = (old = x1, success = true)
-        @test UnsafeAtomics.cas!(ptr, x1, x2, acq_rel, acquire, singlethread) === desired
-        @test xs[1] === x2
-        @testset for (op, name) in rmw_table_for(T)
-            xs[1] = x1
-            @test UnsafeAtomics.modify!(ptr, op, x2, acq_rel, singlethread) === (x1 => op(x1, x2))
-            @test xs[1] === op(x1, x2)
-
-            rmw = getfield(UnsafeAtomics, Symbol(name, :!))
-            xs[1] = x1
-            @test rmw(ptr, x2, acquire, singlethread) === x1
-            @test xs[1] === op(x1, x2)
-        end
-    end
-end
-
 function test_explicit_syncscope()
-    @testset for T in [UInt, Float64]
-        test_explicit_syncscope(T)
+    @testset for T in [UInt, Float64], P in POINTER_KINDS, scope in [none, singlethread]
+        check_operations(T, P, (acquire, scope), (release, scope), (acq_rel, acquire, scope),
+                         (acq_rel, scope), (acquire, scope))
     end
     UnsafeAtomics.fence(monotonic, none)
     UnsafeAtomics.fence(acquire, singlethread)
@@ -163,8 +106,8 @@ end
 
 function test_syncscope_is_emitted()
     # Values alone can't tell whether the scope made it into the instruction.
-    @testset for T in [Int32, UInt64, Float64], scope in SCOPES
-        P, S = Ptr{T}, typeof(scope)
+    @testset for T in [Int32, UInt64, Float64], P in (Ptr{T}, LLVMPtr{T,1}), scope in SCOPES
+        S = typeof(scope)
         @test scoped_instruction(llvm_ir(scoped_load, Tuple{P,S}), r"load atomic .* acquire", scope)
         @test scoped_instruction(llvm_ir(scoped_store!, Tuple{P,T,S}), r"store atomic .* release", scope)
         @test scoped_instruction(llvm_ir(scoped_cas!, Tuple{P,T,T,S}), r"cmpxchg .* acq_rel acquire", scope)
@@ -173,9 +116,9 @@ function test_syncscope_is_emitted()
 end
 
 function test_explicit_scopes()
-    @testset for scope in SCOPES
+    @testset for P in POINTER_KINDS, scope in SCOPES
         xs = Int32[1, 2]
-        ptr = pointer(xs, 1)
+        ptr = pointer_to(P, xs)
         GC.@preserve xs begin
             @test UnsafeAtomics.load(ptr, acquire, scope) === Int32(1)
             UnsafeAtomics.store!(ptr, Int32(2), release, scope)
@@ -192,9 +135,9 @@ end
 function test_unsupported_arguments()
     # These used to recurse in the `as_native_uint` fallbacks until the stack overflowed.
     unsupported_scope = :agent  # only canonical scopes can be passed as a Symbol
-    @testset for T in [Int32, Float32]
+    @testset for T in [Int32, Float32], P in POINTER_KINDS
         xs = T[1, 2]
-        ptr = pointer(xs, 1)
+        ptr = pointer_to(P, xs)
         GC.@preserve xs begin
             @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, release)
             @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, acq_rel)
@@ -219,9 +162,9 @@ end
 
 function test_unordered_rmw()
     # atomicrmw can't be unordered; this used to fail to parse the generated IR.
-    @testset for T in [Int32, Float64]
+    @testset for T in [Int32, Float64], P in POINTER_KINDS
         xs = T[1, 2]
-        ptr = pointer(xs, 1)
+        ptr = pointer_to(P, xs)
         GC.@preserve xs begin
             @test_throws ConcurrencyViolationError UnsafeAtomics.add!(ptr, T(1), unordered)
             @test_throws ConcurrencyViolationError UnsafeAtomics.xchg!(ptr, T(1), unordered)
@@ -248,9 +191,9 @@ cas_acq_rel!(ptr, cmp, new) = UnsafeAtomics.cas!(ptr, cmp, new, acq_rel)
 function test_cas_single_ordering()
     # A single ordering used to be taken as the failure ordering as well, which is
     # invalid for release and acq_rel.
-    @testset for T in [Int32, Float64], ord in [monotonic, acquire, release, acq_rel, seq_cst]
+    @testset for T in [Int32, Float64], P in POINTER_KINDS, ord in [monotonic, acquire, release, acq_rel, seq_cst]
         xs = T[1, 2]
-        ptr = pointer(xs, 1)
+        ptr = pointer_to(P, xs)
         GC.@preserve xs begin
             @test UnsafeAtomics.cas!(ptr, T(1), T(3), ord) === (old = T(1), success = true)
             @test UnsafeAtomics.cas!(ptr, T(1), T(4), ord) === (old = T(3), success = false)
@@ -302,9 +245,9 @@ float_modify!(ptr, op, x) = UnsafeAtomics.modify!(ptr, op, x, monotonic, device)
 
 function test_float_minmax()
     # `max` and `min` have Julia's semantics: NaN propagates, and -0.0 < 0.0
-    @testset for T in [Float16, Float32, Float64], i in 1:2
+    @testset for T in [Float16, Float32, Float64], P in POINTER_KINDS
         xs = T[1, 0]
-        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        ptr = pointer_to(P, xs)
         GC.@preserve xs begin
             @test UnsafeAtomics.max!(ptr, T(-0.0)) === T(1)
             @test UnsafeAtomics.modify!(ptr, max, T(NaN)) === (T(1) => T(NaN))
@@ -319,9 +262,9 @@ function test_float_minmax()
         end
     end
     # `fmax` and `fmin` ignore NaN
-    @testset for T in [Float16, Float32, Float64], i in 1:2
+    @testset for T in [Float16, Float32, Float64], P in POINTER_KINDS
         xs = T[1, 0]
-        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        ptr = pointer_to(P, xs)
         GC.@preserve xs begin
             @test UnsafeAtomics.fmax!(ptr, T(NaN)) === T(1)
             @test xs[1] === T(1)
@@ -337,7 +280,7 @@ function test_float_minmax()
     @test isnan(UnsafeAtomics.fmin(NaN, NaN))
 
     # native where LLVM has the instruction; a compare-and-swap loop otherwise
-    P = Core.LLVMPtr{Float32,1}
+    P = LLVMPtr{Float32,1}
     ir(op) = llvm_ir(float_modify!, Tuple{P,typeof(op),Float32})
     @test occursin("atomicrmw fmax", ir(UnsafeAtomics.fmax))
     @test occursin("atomicrmw fmin", ir(UnsafeAtomics.fmin))
@@ -367,9 +310,9 @@ function test_unsigned_ops()
     @test UA.sub_sat(0x03, 0x05) === 0x00
     @test_throws MethodError UA.inc_wrap(1, 2)
 
-    @testset for T in [UInt8, UInt32, UInt64], i in 1:2
+    @testset for T in [UInt8, UInt32, UInt64], P in POINTER_KINDS
         xs = T[3, 0]
-        ptr = i == 1 ? pointer(xs) : reinterpret(Core.LLVMPtr{T,0}, pointer(xs))
+        ptr = pointer_to(P, xs)
         GC.@preserve xs begin
             @test UA.inc_wrap!(ptr, T(4)) === T(3)
             @test UA.inc_wrap!(ptr, T(4), acquire) === T(4)
@@ -384,7 +327,7 @@ function test_unsigned_ops()
     end
 
     # native from the LLVM version that has the instruction; a compare-and-swap loop before
-    P = Core.LLVMPtr{UInt32,1}
+    P = LLVMPtr{UInt32,1}
     for (op, rmw, version) in ((UA.inc_wrap, "uinc_wrap", v"22"), (UA.dec_wrap, "udec_wrap", v"22"),
                                (UA.sub_cond, "usub_cond", v"22"), (UA.sub_sat, "usub_sat", v"22"))
         ir = llvm_ir(wrap_modify!, Tuple{P,typeof(op),UInt32})
@@ -438,7 +381,7 @@ function test_native_rmw()
     @test native_rmw(+, Bool) === nothing
     @test native_rmw(right, Ptr{Cvoid}) === :xchg
     @test native_rmw(+, Ptr{Cvoid}) === nothing
-    @test native_rmw(right, Core.LLVMPtr{Cvoid,1}) === :xchg
+    @test native_rmw(right, LLVMPtr{Cvoid,1}) === :xchg
     @test native_rmw(right, Nothing) === :xchg
     @test native_rmw(*, Int32) === nothing
     @test native_rmw((a, b) -> a + b, Int32) === nothing
@@ -470,8 +413,9 @@ end
 
 function test_zero_size_values()
     xs = [nothing, nothing]
-    GC.@preserve xs begin
-        ptr = pointer(xs)
+    GC.@preserve xs for P in POINTER_KINDS
+        ptr = pointer_to(P, xs)
+        @test UnsafeAtomics.load(ptr) === UnsafeAtomics.store!(ptr, nothing) === nothing
         @test UnsafeAtomics.load(ptr, acquire) === nothing
         @test UnsafeAtomics.store!(ptr, nothing, release, workgroup) === nothing
         @test UnsafeAtomics.xchg!(ptr, nothing) === nothing
@@ -534,6 +478,34 @@ function test_fence_weak_orderings()
     # it into a no-op, but rejects `unordered`; preserve both behaviors in the fallback.
     @test UnsafeAtomics.fence(monotonic, none) === nothing
     @test_throws Base.ConcurrencyViolationError UnsafeAtomics.fence(unordered, none)
+end
+
+# from memory: before LLVM 17, the AArch64 back-end can't materialize a bfloat constant
+const BFLOAT16_BITS = [0x3f80, 0x4000]  # 1.0, 2.0
+
+function test_bfloat16()
+    isdefined(Core, :BFloat16) || return
+    one, two = reinterpret(Core.BFloat16, BFLOAT16_BITS)
+    bits(x) = reinterpret(UInt16, x)
+    xs = [one]
+    GC.@preserve xs for P in POINTER_KINDS
+        xs[1] = one
+        ptr = pointer_to(P, xs)
+        @test bits(UnsafeAtomics.xchg!(ptr, two)) === 0x3f80
+        if Base.libllvm_version >= v"20"
+            # Core.BFloat16 has no arithmetic without BFloat16s.jl, but `add!` doesn't need it
+            @test bits(UnsafeAtomics.add!(ptr, one)) === 0x4000
+            @test bits(xs[1]) === 0x4040  # 3.0
+        else
+            @test UnsafeAtomics.Internal.native_rmw(+, Core.BFloat16) === nothing
+        end
+    end
+end
+
+# The LLVMPtr methods used to live in a package extension that needed LLVM.jl.
+function test_without_llvm()
+    @test !haskey(Base.loaded_modules, Base.PkgId(Base.UUID("929cbde3-209d-540e-8aea-75f648917ca0"), "LLVM"))
+    @test Base.return_types(UnsafeAtomics.add!, (LLVMPtr{Int32,1}, Int32)) == [Int32]
 end
 
 end  # module

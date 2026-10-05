@@ -1,9 +1,10 @@
 module Helpers
 
 using UnsafeAtomics.Internal: ATOMIC_SIZES
+using Core: LLVMPtr
 using InteractiveUtils: code_llvm
 
-export inttypes, floattypes, llvm_ir, AbstractBits, asbits
+export inttypes, floattypes, POINTER_KINDS, pointer_to, llvm_ir, AbstractBits, asbits
 
 if 16 in ATOMIC_SIZES
     const inttypes = (Int8, Int16, Int32, Int64, Int128,
@@ -13,6 +14,11 @@ else
                       UInt8, UInt16, UInt32, UInt64)
 end
 const floattypes = (Float16, Float32, Float64)
+
+# The pointer kinds to run on (the CPU can only access address space 0).
+const POINTER_KINDS = (Ptr, LLVMPtr)
+pointer_to(::Type{Ptr}, xs, i = 1) = pointer(xs, i)
+pointer_to(::Type{LLVMPtr}, xs, i = 1) = reinterpret(LLVMPtr{eltype(xs),0}, pointer(xs, i))
 
 # The generated code, without the counters that code coverage adds (`atomicrmw add` on a
 # constant address).
