@@ -267,51 +267,91 @@ end
 ) where {T,success_order,failure_order,scope,weak,volatile,align,md} =
     generate(cmpxchg_ir, ptr, T, success_order, failure_order, scope, weak, volatile, align, md)
 
-# Read-modify-write with any function: an `atomicrmw` where one implements `op` on values of
-# type `T`, and a compare-and-swap loop otherwise.
-function native_rmw(@nospecialize(op), @nospecialize(T))
+"""
+    UnsafeAtomics.Internal.is_native()
+
+Whether this code is compiled by Julia's own pipeline, which hands the IR as it is to the
+host's LLVM back-end. UnsafeAtomics then avoids what that back-end can't compile. Other
+pipelines legalize atomics for their target themselves: GPUCompiler overlays this to return
+`false` (see `ext/UnsafeAtomicsGPUCompilerExt.jl`).
+"""
+@inline is_native() = true
+
+# The `atomicrmw` operation that implements `op` on values of type `T`, if the IR of this
+# version of LLVM can express one, or `nothing`.
+function ir_rmw(@nospecialize(op), @nospecialize(T))
     is_zero_size(T) && return op === right ? :xchg : nothing
     is_atomic_type(T) || return nothing
     int = T <: Base.BitInteger
-    # before LLVM 20, the AArch64 back-end can't compile floating-point atomicrmw on bfloat
-    float = is_ieee_float(T) &&
-            !(HAS_BFLOAT16 && T === Core.BFloat16 && Base.libllvm_version < v"20")
+    float = is_ieee_float(T)
     bool = T === Bool
-    if op === right
-        return :xchg
+    rmw = if op === right
+        :xchg
     elseif op === (+)
-        return int ? :add : float ? :fadd : nothing
+        int ? :add : float ? :fadd : nothing
     elseif op === (-)
-        return int ? :sub : float ? :fsub : nothing
+        int ? :sub : float ? :fsub : nothing
     elseif op === (&)
-        return int || bool ? :and : nothing
+        int || bool ? :and : nothing
     elseif op === (|)
-        return int || bool ? :or : nothing
+        int || bool ? :or : nothing
     elseif op === xor
-        return int || bool ? :xor : nothing
+        int || bool ? :xor : nothing
     elseif op === (⊼)
         # a bitwise nand of Bools isn't a Bool
-        return int ? :nand : nothing
+        int ? :nand : nothing
     elseif op === max
         # Julia's `max` propagates NaNs and orders -0.0 before 0.0, like LLVM's `fmaximum`
-        return T <: Base.BitSigned ? :max : T <: Base.BitUnsigned || bool ? :umax :
-               float && LLVM.isavailable(LLVM.AtomicRMWBinOp.FMaximum) ? :fmaximum : nothing
+        T <: Base.BitSigned ? :max : T <: Base.BitUnsigned || bool ? :umax :
+        float ? :fmaximum : nothing
     elseif op === min
-        return T <: Base.BitSigned ? :min : T <: Base.BitUnsigned || bool ? :umin :
-               float && LLVM.isavailable(LLVM.AtomicRMWBinOp.FMinimum) ? :fminimum : nothing
+        T <: Base.BitSigned ? :min : T <: Base.BitUnsigned || bool ? :umin :
+        float ? :fminimum : nothing
     elseif op === UnsafeAtomics.fmax
-        return float ? :fmax : nothing
+        float ? :fmax : nothing
     elseif op === UnsafeAtomics.fmin
-        return float ? :fmin : nothing
+        float ? :fmin : nothing
+    elseif T <: Base.BitUnsigned
+        op === UnsafeAtomics.inc_wrap ? :uinc_wrap :
+        op === UnsafeAtomics.dec_wrap ? :udec_wrap :
+        op === UnsafeAtomics.sub_cond ? :usub_cond :
+        op === UnsafeAtomics.sub_sat ? :usub_sat : nothing
+    else
+        nothing
     end
-    # LLVM parses these from version 16 or 20, but before LLVM 22 the AArch64 back-end can't
-    # compile them. Back-ends for targets that can use `llvm_rmw!` directly.
-    rmw = op === UnsafeAtomics.inc_wrap ? :uinc_wrap :
-          op === UnsafeAtomics.dec_wrap ? :udec_wrap :
-          op === UnsafeAtomics.sub_cond ? :usub_cond :
-          op === UnsafeAtomics.sub_sat ? :usub_sat : nothing
-    rmw !== nothing && T <: Base.BitUnsigned && Base.libllvm_version >= v"22" && return rmw
-    return nothing
+    return rmw === nothing || rmw_operation(rmw) === nothing ? nothing : rmw
+end
+
+# What the host's LLVM back-end can't compile, measured with Julia 1.10 to 1.14 and upstream
+# LLVM 15 to 23 on x86, AArch64, ARM, PowerPC and RISC-V.
+const HOST_ARCH, HOST_LLVM = Sys.ARCH, Base.libllvm_version
+const HOST_RISCV = HOST_ARCH === :riscv64
+const HOST_PPC = HOST_ARCH === :powerpc64le || HOST_ARCH === :ppc64le
+# AArch64 with LSE can't select these before llvm/llvm-project#171126
+const HOST_LACKS_WRAPPING_RMW = HOST_ARCH === :aarch64 && HOST_LLVM < v"22"
+# these back-ends lack bfloat support altogether
+const HOST_LACKS_BFLOAT16_XCHG = HOST_PPC || (HOST_RISCV && HOST_LLVM < v"18")
+const HOST_LACKS_BFLOAT16_RMW = HOST_LACKS_BFLOAT16_XCHG ||
+    (HOST_ARCH === :aarch64 && HOST_LLVM < v"19") ||
+    (startswith(String(HOST_ARCH), "arm") && HOST_LLVM < v"20")
+const HOST_LACKS_FLOAT16_RMW = HOST_RISCV && HOST_LLVM < v"16"
+
+function host_supports_rmw(rmw::Symbol, @nospecialize(T))
+    rmw in (:uinc_wrap, :udec_wrap, :usub_cond, :usub_sat) && return !HOST_LACKS_WRAPPING_RMW
+    if HAS_BFLOAT16 && T === Core.BFloat16
+        return rmw === :xchg ? !HOST_LACKS_BFLOAT16_XCHG : !HOST_LACKS_BFLOAT16_RMW
+    end
+    T === Float16 && rmw !== :xchg && return !HOST_LACKS_FLOAT16_RMW
+    return true
+end
+
+# Read-modify-write with any function of type `F`: an `atomicrmw` where one implements it on
+# values of type `T`, and a compare-and-swap loop otherwise.
+function native_rmw(@nospecialize(F), @nospecialize(T), native::Bool)
+    Base.issingletontype(F) || return nothing
+    rmw = ir_rmw(F.instance, T)
+    rmw !== nothing && native && !host_supports_rmw(rmw, T) && return nothing
+    return rmw
 end
 
 # `op(old, x)` for the value `modify!` returns and the compare-and-swap loop. Base doesn't
@@ -342,9 +382,8 @@ end
     end
 end
 
-function modify_ir(T, op, order, fetch)
+function modify_ir(rmw, order, fetch)
     check_order(order, RMW_ORDERS)
-    rmw = Base.issingletontype(op) ? native_rmw(op.instance, T) : nothing
     if rmw === nothing
         loop = :(cas_loop!(ptr, op, x, order, scope, volatile, align, md))
         return fetch ? :(first($loop)) : loop
@@ -353,15 +392,21 @@ function modify_ir(T, op, order, fetch)
     return fetch ? rmw : :(old = $rmw; old => apply_op(op, old, x))
 end
 
+# `is_native()` is passed in, as the generator doesn't see overlays.
+@generated _llvm_modify!(
+    ptr::AnyPtr{T}, op, x::T, ::Val{native}, order::Val{o}, scope::Val, volatile::Val,
+    align::Val, md::Val, ::Val{fetch},
+) where {T,native,o,fetch} = generate(modify_ir, native_rmw(op, T, native), o, fetch)
+
 # `old => op(old, x)`, where `op(old, x)` is computed in Julia for an `atomicrmw`
-@generated llvm_modify!(
-    ptr::AnyPtr{T}, op, x::T, order::Val{o}, scope::Val, volatile::Val, align::Val, md::Val,
-) where {T,o} = generate(modify_ir, T, op, o, false)
+@inline llvm_modify!(ptr::AnyPtr{T}, op, x::T, order::Val, scope::Val, volatile::Val,
+                     align::Val, md::Val) where {T} =
+    _llvm_modify!(ptr, op, x, Val(is_native()), order, scope, volatile, align, md, Val(false))
 
 # only `old`, without computing `op(old, x)` for an `atomicrmw`
-@generated llvm_fetch_modify!(
-    ptr::AnyPtr{T}, op, x::T, order::Val{o}, scope::Val, volatile::Val, align::Val, md::Val,
-) where {T,o} = generate(modify_ir, T, op, o, true)
+@inline llvm_fetch_modify!(ptr::AnyPtr{T}, op, x::T, order::Val, scope::Val, volatile::Val,
+                           align::Val, md::Val) where {T} =
+    _llvm_modify!(ptr, op, x, Val(is_native()), order, scope, volatile, align, md, Val(true))
 
 # Compile the generators, which use LLVM.jl, as part of the package image.
 let P = LLVMPtr{Int32,1}, F = LLVMPtr{Float32,1}

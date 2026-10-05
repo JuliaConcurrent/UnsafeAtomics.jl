@@ -71,19 +71,23 @@ functions that forward them `@inline`, or use the primitives for back-ends below
 
 ## Read-modify-write operations
 
-`modify!` is a single `atomicrmw` for these operations, and a loop of `load` and weak `cas!`
-otherwise:
+`modify!` is a single `atomicrmw` for these operations, where the version of LLVM has the
+instruction, and a loop of `load` and weak `cas!` otherwise. In code that Julia compiles, that
+also depends on the CPU: e.g., AArch64 only has `uinc_wrap` from LLVM 22, and `fadd` on
+`Core.BFloat16` from LLVM 19. GPU back-ends get the instruction, and implement it for their
+target.
 
 | `op` | types | `atomicrmw` |
 |:-----|:------|:------------|
-| `+`, `-` | integers; `Float16`, `Float32`, `Float64`, and `Core.BFloat16` from LLVM 20 | `add`, `sub`; `fadd`, `fsub` |
+| `+`, `-` | integers; `Float16`, `Float32`, `Float64`, `Core.BFloat16` | `add`, `sub`; `fadd`, `fsub` |
 | `&`, `\|`, `xor` | integers, `Bool` | `and`, `or`, `xor` |
 | `⊼` | integers | `nand` |
 | `max`, `min` | integers, `Bool` | `max`, `min`, `umax`, `umin` |
 | `max`, `min` | floating-point numbers, from LLVM 21 (Julia 1.14) | `fmaximum`, `fminimum` |
-| `UA.fmax`, `UA.fmin` | floating-point numbers (`Core.BFloat16` from LLVM 20) | `fmax`, `fmin` |
+| `UA.fmax`, `UA.fmin` | floating-point numbers | `fmax`, `fmin` |
 | `UA.right` | any | `xchg` |
-| `UA.inc_wrap`, `UA.dec_wrap`, `UA.sub_cond`, `UA.sub_sat` | unsigned integers, from LLVM 22 (Julia 1.14) | `uinc_wrap`, `udec_wrap`, `usub_cond`, `usub_sat` |
+| `UA.inc_wrap`, `UA.dec_wrap` | unsigned integers, from LLVM 16 (Julia 1.11) | `uinc_wrap`, `udec_wrap` |
+| `UA.sub_cond`, `UA.sub_sat` | unsigned integers, from LLVM 20 (Julia 1.13) | `usub_cond`, `usub_sat` |
 
 Every operation is a Julia function with the semantics of the instruction, so the result is the
 same with the instruction or the loop. `max` and `min` on floats have Julia's semantics (NaN
@@ -117,6 +121,11 @@ for the default one), `op` for `llvm_rmw!` an `atomicrmw` operation such as `:ui
 `md` metadata to attach, `()` or e.g. `((:mmra, ((Symbol("metal-synchronize-as"), :threadgroup),)),)`
 for LLVM's memory model relaxation annotations. `llvm_rmw!` emits the operation as it is, so the
 target has to support it: e.g., LLVM's AArch64 back-end can't compile `uinc_wrap` before LLVM 22.
+Code that GPUCompiler compiles gets every instruction that the IR can express, and
+GPUCompiler implements those for the target. That uses GPUCompiler's
+`SHARED_METHOD_TABLE`: a back-end that builds its own `method_table_view` instead of
+declaring its tables with `method_tables` gets the code Julia's pipeline would, which is
+correct but has the CPU's restrictions.
 
 ## Upgrading from 0.3
 

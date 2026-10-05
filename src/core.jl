@@ -35,7 +35,7 @@ version.
     UnsafeAtomics.inc_wrap(old, x)
 
 `old + 1`, wrapping around to zero past `x`: `old >= x ? 0 : old + 1`, for unsigned
-integers. `modify!` and `inc_wrap!` use `atomicrmw uinc_wrap` for it from LLVM 22 (Julia 1.14).
+integers. `modify!` and `inc_wrap!` use `atomicrmw uinc_wrap` for it (see `modify!`).
 """
 UnsafeAtomics.inc_wrap(old::T, x::T) where {T<:Unsigned} = old >= x ? zero(T) : old + one(T)
 
@@ -43,8 +43,8 @@ UnsafeAtomics.inc_wrap(old::T, x::T) where {T<:Unsigned} = old >= x ? zero(T) : 
     UnsafeAtomics.dec_wrap(old, x)
 
 `old - 1`, wrapping around to `x` at zero or above `x`: `(old == 0 || old > x) ? x : old - 1`,
-for unsigned integers. `modify!` and `dec_wrap!` use `atomicrmw udec_wrap` for it from LLVM 22
-(Julia 1.14).
+for unsigned integers. `modify!` and `dec_wrap!` use `atomicrmw udec_wrap` for it (see
+`modify!`).
 """
 UnsafeAtomics.dec_wrap(old::T, x::T) where {T<:Unsigned} =
     (iszero(old) || old > x) ? x : old - one(T)
@@ -53,7 +53,7 @@ UnsafeAtomics.dec_wrap(old::T, x::T) where {T<:Unsigned} =
     UnsafeAtomics.sub_cond(old, x)
 
 `old - x` if that doesn't wrap around, `old` otherwise, for unsigned integers. `modify!` and
-`sub_cond!` use `atomicrmw usub_cond` for it from LLVM 22 (Julia 1.14).
+`sub_cond!` use `atomicrmw usub_cond` for it (see `modify!`).
 """
 UnsafeAtomics.sub_cond(old::T, x::T) where {T<:Unsigned} = old >= x ? old - x : old
 
@@ -61,7 +61,7 @@ UnsafeAtomics.sub_cond(old::T, x::T) where {T<:Unsigned} = old >= x ? old - x : 
     UnsafeAtomics.sub_sat(old, x)
 
 `old - x`, saturating at zero, for unsigned integers. `modify!` and `sub_sat!` use
-`atomicrmw usub_sat` for it from LLVM 22 (Julia 1.14).
+`atomicrmw usub_sat` for it (see `modify!`).
 """
 UnsafeAtomics.sub_sat(old::T, x::T) where {T<:Unsigned} = old >= x ? old - x : zero(T)
 

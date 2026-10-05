@@ -305,12 +305,12 @@ function test_unsigned_ops()
         end
     end
 
-    # native from the LLVM version that has the instruction; a compare-and-swap loop before
+    # native where the host has the instruction; a compare-and-swap loop otherwise
     P = LLVMPtr{UInt32,1}
-    for (op, rmw, version) in ((UA.inc_wrap, "uinc_wrap", v"22"), (UA.dec_wrap, "udec_wrap", v"22"),
-                               (UA.sub_cond, "usub_cond", v"22"), (UA.sub_sat, "usub_sat", v"22"))
+    for op in (UA.inc_wrap, UA.dec_wrap, UA.sub_cond, UA.sub_sat)
         ir = llvm_ir(wrap_modify!, Tuple{P,typeof(op),UInt32})
-        if Base.libllvm_version >= version
+        rmw = UA.Internal.native_rmw(typeof(op), UInt32, true)
+        if rmw !== nothing
             @test occursin("atomicrmw $rmw", ir)
         else
             @test occursin("cmpxchg", ir) && !occursin("atomicrmw", ir)
@@ -319,51 +319,58 @@ function test_unsigned_ops()
 end
 
 function test_native_rmw()
-    # which operations have an atomicrmw instruction, on this version of LLVM
+    # which operations have an atomicrmw instruction in the IR of this version of LLVM
     UA = UnsafeAtomics
-    native_rmw = UA.Internal.native_rmw
-    llvm = Base.libllvm_version
+    ir_rmw = UA.Internal.ir_rmw
+    available(op) = UA.Internal.rmw_operation(op) !== nothing
     bf16 = isdefined(Core, :BFloat16) ? (Core.BFloat16,) : ()
     for T in (Int8, Int32, Int64), (op, rmw) in ((+, :add), (-, :sub), (&, :and), (|, :or),
                                                  (xor, :xor), (⊼, :nand), (max, :max),
                                                  (min, :min), (right, :xchg))
-        @test native_rmw(op, T) === rmw
+        @test ir_rmw(op, T) === rmw
     end
     for T in (UInt8, UInt64)
-        @test native_rmw(max, T) === :umax
-        @test native_rmw(min, T) === :umin
-        @test native_rmw(UA.inc_wrap, T) === (llvm >= v"22" ? :uinc_wrap : nothing)
-        @test native_rmw(UA.dec_wrap, T) === (llvm >= v"22" ? :udec_wrap : nothing)
-        @test native_rmw(UA.sub_cond, T) === (llvm >= v"22" ? :usub_cond : nothing)
-        @test native_rmw(UA.sub_sat, T) === (llvm >= v"22" ? :usub_sat : nothing)
+        @test ir_rmw(max, T) === :umax
+        @test ir_rmw(min, T) === :umin
+        for (op, rmw) in ((UA.inc_wrap, :uinc_wrap), (UA.dec_wrap, :udec_wrap),
+                          (UA.sub_cond, :usub_cond), (UA.sub_sat, :usub_sat))
+            @test ir_rmw(op, T) === (available(rmw) ? rmw : nothing)
+        end
     end
-    @test native_rmw(UA.inc_wrap, Int32) === nothing
-    for T in bf16
-        # the AArch64 back-end can't compile these before LLVM 20
-        @test native_rmw(+, T) === (llvm >= v"20" ? :fadd : nothing)
-        @test native_rmw(UA.fmax, T) === (llvm >= v"20" ? :fmax : nothing)
-        @test native_rmw(right, T) === :xchg
+    @test ir_rmw(UA.inc_wrap, Int32) === nothing
+    for T in (Float16, Float32, Float64, bf16...)
+        @test ir_rmw(+, T) === :fadd
+        @test ir_rmw(-, T) === :fsub
+        @test ir_rmw(UA.fmax, T) === :fmax
+        @test ir_rmw(UA.fmin, T) === :fmin
+        @test ir_rmw(max, T) === (available(:fmaximum) ? :fmaximum : nothing)
+        @test ir_rmw(min, T) === (available(:fminimum) ? :fminimum : nothing)
+        @test ir_rmw(right, T) === :xchg
+        @test ir_rmw(&, T) === nothing
     end
-    for T in (Float16, Float32, Float64)
-        @test native_rmw(+, T) === :fadd
-        @test native_rmw(-, T) === :fsub
-        @test native_rmw(UA.fmax, T) === :fmax
-        @test native_rmw(UA.fmin, T) === :fmin
-        @test native_rmw(max, T) === (llvm >= v"21" ? :fmaximum : nothing)
-        @test native_rmw(min, T) === (llvm >= v"21" ? :fminimum : nothing)
-        @test native_rmw(right, T) === :xchg
-        @test native_rmw(&, T) === nothing
+    @test ir_rmw(|, Bool) === :or
+    @test ir_rmw(max, Bool) === :umax
+    @test ir_rmw(⊼, Bool) === nothing  # a bitwise nand of Bools isn't a Bool
+    @test ir_rmw(+, Bool) === nothing
+    @test ir_rmw(right, Ptr{Cvoid}) === :xchg
+    @test ir_rmw(+, Ptr{Cvoid}) === nothing
+    @test ir_rmw(right, LLVMPtr{Cvoid,1}) === :xchg
+    @test ir_rmw(right, Nothing) === :xchg
+    @test ir_rmw(*, Int32) === nothing
+
+    # Julia's pipeline only uses what the host's back-end can compile
+    native_rmw = UA.Internal.native_rmw
+    @test UA.Internal.is_native()
+    for T in (UInt32, Float16, bf16...), op in (+, max, right, UA.fmax, UA.inc_wrap)
+        rmw = ir_rmw(op, T)
+        @test native_rmw(typeof(op), T, true) ===
+              (rmw !== nothing && UA.Internal.host_supports_rmw(rmw, T) ? rmw : nothing)
+        @test native_rmw(typeof(op), T, false) === rmw
     end
-    @test native_rmw(|, Bool) === :or
-    @test native_rmw(max, Bool) === :umax
-    @test native_rmw(⊼, Bool) === nothing  # a bitwise nand of Bools isn't a Bool
-    @test native_rmw(+, Bool) === nothing
-    @test native_rmw(right, Ptr{Cvoid}) === :xchg
-    @test native_rmw(+, Ptr{Cvoid}) === nothing
-    @test native_rmw(right, LLVMPtr{Cvoid,1}) === :xchg
-    @test native_rmw(right, Nothing) === :xchg
-    @test native_rmw(*, Int32) === nothing
-    @test native_rmw((a, b) -> a + b, Int32) === nothing
+    if Sys.ARCH === :aarch64 && Base.libllvm_version < v"22"
+        @test native_rmw(typeof(UA.inc_wrap), UInt32, true) === nothing
+    end
+    @test native_rmw(typeof((a, b) -> a + b), Int32, true) === nothing
 end
 
 function test_contention()

@@ -69,17 +69,19 @@ floating-point numbers, it can differ from the stored value in NaN payloads or, 
 
 | `op` | `T` | `atomicrmw` |
 |:-----|:----|:------------|
-| `+`, `-` | integers; `Float16`, `Float32`, `Float64`, and `Core.BFloat16` from LLVM 20 | `add`, `sub`; `fadd`, `fsub` |
+| `+`, `-` | integers; `Float16`, `Float32`, `Float64`, `Core.BFloat16` | `add`, `sub`; `fadd`, `fsub` |
 | `&`, `\\|`, `xor` | integers, `Bool` | `and`, `or`, `xor` |
 | `⊼` | integers | `nand` |
 | `max`, `min` | integers, `Bool` | `max`, `min`, `umax`, `umin` |
 | `max`, `min` | floating-point numbers, from LLVM 21 | `fmaximum`, `fminimum` |
-| `UnsafeAtomics.fmax`, `UnsafeAtomics.fmin` | floating-point numbers (`Core.BFloat16` from LLVM 20) | `fmax`, `fmin` |
+| `UnsafeAtomics.fmax`, `UnsafeAtomics.fmin` | floating-point numbers | `fmax`, `fmin` |
 | `UnsafeAtomics.right` | any | `xchg` |
-| `UnsafeAtomics.inc_wrap`, `dec_wrap`, `sub_cond`, `sub_sat` | unsigned integers, from LLVM 22 | `uinc_wrap`, `udec_wrap`, `usub_cond`, `usub_sat` |
+| `UnsafeAtomics.inc_wrap`, `dec_wrap` | unsigned integers, from LLVM 16 | `uinc_wrap`, `udec_wrap` |
+| `UnsafeAtomics.sub_cond`, `sub_sat` | unsigned integers, from LLVM 20 | `usub_cond`, `usub_sat` |
 
-Other operations, e.g. on older versions of LLVM, use a loop of `load` and weak `cas!`, which
-computes `op(old, x)` in Julia and stores exactly that.
+In code that Julia compiles, operations that the CPU's LLVM back-end can't compile also use
+the loop, e.g. `uinc_wrap` on AArch64 before LLVM 22. Other operations use a loop of `load`
+and weak `cas!`, which computes `op(old, x)` in Julia and stores exactly that.
 
 $ARGUMENTS_DOC
 """ UnsafeAtomics.modify!
