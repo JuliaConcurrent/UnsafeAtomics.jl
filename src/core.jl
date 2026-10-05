@@ -102,16 +102,8 @@ else
         elseif ord === unordered
             # defined below
         else
-            @eval function system_fence(::$(typeof(ord)))
-                return llvmcall(
-                    $("""
-                    fence $ord
-                    ret void
-                    """),
-                    Cvoid,
-                    Tuple{},
-                )
-            end
+            @eval system_fence(::$(typeof(ord))) =
+                llvm_fence(Val($(QuoteNode(llvm_ordering(ord)))), Val(:system), Val(()))
         end
     end
 end

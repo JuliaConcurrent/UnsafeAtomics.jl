@@ -37,11 +37,10 @@ function sub_sat end
 
 module Internal
 
-using Base: llvmcall
 using Core: LLVMPtr
 
 using LLVM, LLVM.IR, LLVM.Build
-using LLVM.Interop: generate_llvmcall, @asmcall
+using LLVM.Interop: generate_llvmcall
 
 using ..UnsafeAtomics: UnsafeAtomics, Ordering, SyncScope, right
 
