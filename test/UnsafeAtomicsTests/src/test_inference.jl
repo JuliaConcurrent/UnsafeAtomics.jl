@@ -7,7 +7,8 @@ using Test
 
 using ..Helpers
 
-# Constant orderings and scopes, as objects or as Symbols, give a single instruction.
+# Constant orderings and scopes, as objects or as Symbols, give a single instruction. Code that
+# Julia compiles uses the system scope for all scopes but `singlethread`.
 add_constant(p, x) = UnsafeAtomics.add!(p, x, acquire, device)
 add_symbols(p, x) = UnsafeAtomics.add!(p, x, :acquire, :device)
 add_alias(p, x) = UnsafeAtomics.add!(p, x, :acquire_release, :workgroup)
@@ -29,21 +30,22 @@ instructions(ir, instruction) = [strip(l) for l in split(ir, '\n') if occursin(i
 function check(f, types, instruction, text, rettype)
     ir = llvm_ir(f, types)
     @test endswith(only(instructions(ir, instruction)), text)
+    occursin("syncscope", text) || @test !occursin("syncscope", ir)
     @test !occursin(r"apply_generic|jl_invoke|jl_f_|throw", ir)
     @test only(Base.return_types(f, types)) == rettype
 end
 
 function test_constant_orderings()
-    check(add_constant, Tuple{P,Int32}, "atomicrmw", "syncscope(\"device\") acquire, align 4", Int32)
-    check(add_symbols, Tuple{P,Int32}, "atomicrmw", "syncscope(\"device\") acquire, align 4", Int32)
-    check(add_alias, Tuple{P,Int32}, "atomicrmw", "syncscope(\"workgroup\") acq_rel, align 4", Int32)
-    check(add_agent, Tuple{P,Int32}, "atomicrmw", "syncscope(\"agent\") monotonic, align 4", Int32)
-    check(modify_symbols, Tuple{P,Int32}, "atomicrmw", "syncscope(\"subgroup\") seq_cst, align 4",
+    check(add_constant, Tuple{P,Int32}, "atomicrmw", " acquire, align 4", Int32)
+    check(add_symbols, Tuple{P,Int32}, "atomicrmw", " acquire, align 4", Int32)
+    check(add_alias, Tuple{P,Int32}, "atomicrmw", " acq_rel, align 4", Int32)
+    check(add_agent, Tuple{P,Int32}, "atomicrmw", " monotonic, align 4", Int32)
+    check(modify_symbols, Tuple{P,Int32}, "atomicrmw", " seq_cst, align 4",
           Pair{Int32,Int32})
     check(load_symbols, Tuple{P}, "load atomic", "syncscope(\"singlethread\") seq_cst, align 4", Int32)
     check(store_symbols, Tuple{P,Int32}, "store atomic", " release, align 4", Nothing)
     @test !occursin("syncscope", llvm_ir(store_symbols, Tuple{P,Int32}))
-    check(cas_symbols, Tuple{P,Int32,Int32}, "cmpxchg", "syncscope(\"device\") acq_rel acquire, align 4",
+    check(cas_symbols, Tuple{P,Int32,Int32}, "cmpxchg", " acq_rel acquire, align 4",
           @NamedTuple{old::Int32, success::Bool})
     # the failure ordering is derived from a Symbol too
     for (f, orders) in ((cas_acq_rel, "acq_rel acquire"), (cas_acquire_release, "acq_rel acquire"),
@@ -51,7 +53,7 @@ function test_constant_orderings()
         check(f, Tuple{P,Int32,Int32}, "cmpxchg", " $orders, align 4",
               @NamedTuple{old::Int32, success::Bool})
     end
-    check(fence_symbols, Tuple{}, r"^\s*fence ", "fence syncscope(\"workgroup\") acq_rel", Nothing)
+    check(fence_symbols, Tuple{}, r"^\s*fence ", "fence acq_rel", Nothing)
 end
 
 kw_load(p) = UnsafeAtomics.load(p, acquire, device; volatile = true, align = 16)
@@ -70,7 +72,7 @@ function test_keywords()
         @test !occursin(r"apply_generic|jl_invoke|jl_f_", ir)
         return [strip(l) for l in split(ir, '\n') if occursin(r"atomic|cmpxchg", l) && !occursin("tag_addr", l)]
     end
-    @test endswith(only(instruction(kw_load, Tuple{P})), "syncscope(\"device\") acquire, align 16")
+    @test endswith(only(instruction(kw_load, Tuple{P})), " acquire, align 16")
     @test occursin("load atomic volatile", only(instruction(kw_load, Tuple{P})))
     @test occursin("store atomic volatile", only(instruction(kw_store, Tuple{P,Int32})))
     cas = only(instruction(kw_cas, Tuple{P,Int32,Int32}))

@@ -30,12 +30,13 @@ Base.show(io::IO, o::ConcreteSyncScopes) = print(io, UnsafeAtomics, '.', llvm_sy
 Base.show(io::IO, o::LLVMSyncScope) =
     print(io, UnsafeAtomics, ".SyncScope(", repr(llvm_syncscope(o)), ')')
 
-# The name of the scope, as a `Val` for the generator. The canonical scopes can also be passed
-# as a `Symbol`. Like orderings, scopes have to be constants.
-@inline scope_val(scope::LLVMSyncScope) = Val(llvm_syncscope(scope))
+# The name of the scope to emit (see `native_scope`), as a `Val` for the generator. The
+# canonical scopes can also be passed as a `Symbol`. Like orderings, scopes have to be
+# constants.
+@inline scope_val(scope::LLVMSyncScope) = Val(native_scope(llvm_syncscope(scope)))
 @inline scope_val(scope::Symbol) =
     (scope === :system || scope === :device || scope === :workgroup || scope === :subgroup ||
-     scope === :singlethread) ? Val(scope) : throw_invalid_scope()
+     scope === :singlethread) ? Val(native_scope(scope)) : throw_invalid_scope()
 scope_val(@nospecialize(scope)) = throw_invalid_scope()
 
 # One literal: building the message at run time would allocate a string, which GPU code can't.

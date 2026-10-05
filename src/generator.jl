@@ -271,11 +271,17 @@ end
     UnsafeAtomics.Internal.is_native()
 
 Whether this code is compiled by Julia's own pipeline, which hands the IR as it is to the
-host's LLVM back-end. UnsafeAtomics then avoids what that back-end can't compile. Other
-pipelines legalize atomics for their target themselves: GPUCompiler overlays this to return
-`false` (see `ext/UnsafeAtomicsGPUCompilerExt.jl`).
+host's LLVM back-end. UnsafeAtomics then avoids what that back-end can't compile, and uses
+the system scope for all scopes but `singlethread`, like Clang does for CPUs. Other pipelines
+legalize atomics for their target themselves: GPUCompiler overlays this to return `false`
+(see `ext/UnsafeAtomicsGPUCompilerExt.jl`).
 """
 @inline is_native() = true
+
+# The scope to emit for the scope called `name`. LLVM's CPU back-ends only distinguish
+# `singlethread` from the system scope, and X86 even compiles a `seq_cst` fence in another
+# scope like one in `singlethread`.
+@inline native_scope(name::Symbol) = is_native() && name !== :singlethread ? :system : name
 
 # The `atomicrmw` operation that implements `op` on values of type `T`, if the IR of this
 # version of LLVM can express one, or `nothing`.

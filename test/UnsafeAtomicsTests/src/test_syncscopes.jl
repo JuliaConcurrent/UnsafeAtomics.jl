@@ -34,9 +34,9 @@ function test_constructor()
     @test @inferred((() -> SyncScope(:workgroup))()) === UnsafeAtomics.workgroup
 end
 
-# names are passed to LLVM verbatim, also when they need escaping
-const ODD_SCOPE = SyncScope(Symbol("a\"b\\c"))
-odd_load(p) = UnsafeAtomics.load(p, UnsafeAtomics.monotonic, ODD_SCOPE)
+# the primitives pass names to LLVM verbatim, also when they need escaping
+odd_load(p) = UnsafeAtomics.Internal.llvm_load(p, Val(:monotonic), Val(Symbol("a\"b\\c")),
+                                                Val(false), Val(8), Val(()))
 
 function test_escaping()
     ir = llvm_ir(odd_load, Tuple{Ptr{Int}})

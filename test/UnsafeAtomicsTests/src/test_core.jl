@@ -99,20 +99,32 @@ function scoped_instruction(ir, instruction, scope)
     end
 end
 
+const Internal = UnsafeAtomics.Internal
+prim_load(ptr, ::S) where {S} =
+    Internal.llvm_load(ptr, Val(:acquire), Val(Internal.llvm_syncscope(S())), Val(false),
+                       Val(sizeof(eltype(ptr))), Val(()))
+prim_fence(::S) where {S} =
+    Internal.llvm_fence(Val(:seq_cst), Val(Internal.llvm_syncscope(S())), Val(()))
+
 function test_syncscope_is_emitted()
-    # Values alone can't tell whether the scope made it into the instruction.
+    # Values alone can't tell whether the scope made it into the instruction. Code that Julia
+    # compiles uses the system scope for all but `singlethread`, as CPUs have no other ones.
     @testset for T in [Int32, UInt64, Float64], P in (Ptr{T}, LLVMPtr{T,1}), scope in SCOPES
         S = typeof(scope)
-        @test scoped_instruction(llvm_ir(scoped_load, Tuple{P,S}), r"load atomic .* acquire", scope)
-        @test scoped_instruction(llvm_ir(scoped_store!, Tuple{P,T,S}), r"store atomic .* release", scope)
-        @test scoped_instruction(llvm_ir(scoped_cas!, Tuple{P,T,T,S}), r"cmpxchg .* acq_rel acquire", scope)
-        @test scoped_instruction(llvm_ir(scoped_add!, Tuple{P,T,S}), r"atomicrmw f?add .* acq_rel", scope)
+        native = scope === singlethread ? singlethread : system
+        @test scoped_instruction(llvm_ir(scoped_load, Tuple{P,S}), r"load atomic .* acquire", native)
+        @test scoped_instruction(llvm_ir(scoped_store!, Tuple{P,T,S}), r"store atomic .* release", native)
+        @test scoped_instruction(llvm_ir(scoped_cas!, Tuple{P,T,T,S}), r"cmpxchg .* acq_rel acquire", native)
+        @test scoped_instruction(llvm_ir(scoped_add!, Tuple{P,T,S}), r"atomicrmw f?add .* acq_rel", native)
+        # the primitives for back-ends emit the scope they're given
+        @test scoped_instruction(llvm_ir(prim_load, Tuple{P,S}), r"load atomic .* acquire", scope)
     end
-    # system-scope fences are tested by test_fence_is_emitted
-    @testset for scope in filter(!=(system), SCOPES), ord in [acquire, release, acq_rel, seq_cst]
-        ir = llvm_ir(scoped_fence, Tuple{typeof(ord),typeof(scope)})
-        name = UnsafeAtomics.Internal.llvm_syncscope(scope)
-        @test occursin("fence syncscope(\"$name\") $ord", ir)
+    @testset for scope in SCOPES, ord in [acquire, release, acq_rel, seq_cst]
+        S = typeof(scope)
+        ir = llvm_ir(scoped_fence, Tuple{typeof(ord),S})
+        @test occursin(scope === singlethread ? "fence syncscope(\"singlethread\") $ord" :
+                       r"fence (acquire|release|acq_rel|seq_cst)", ir)
+        @test scoped_instruction(llvm_ir(prim_fence, Tuple{S}), r"fence ", scope)
     end
 end
 

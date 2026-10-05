@@ -58,8 +58,8 @@ The scope is the set of threads an operation synchronizes with. `UA.singlethread
 `subgroup`, `workgroup`, `device` and `system` are the canonical scopes, which GPU back-ends
 map to their targets' scopes; they can also be passed as a `Symbol`. `UA.SyncScope(name)` makes
 other LLVM syncscopes, for scopes specific to a target. The default is `system`, as in LLVM, on
-every pointer; GPU code usually wants `device`. On CPUs, all scopes but `singlethread` are the
-system scope.
+every pointer; GPU code usually wants `device`. CPUs only have the system scope and
+`singlethread`, so in code that Julia compiles, the others are the system scope.
 
 ## Constants
 
@@ -121,11 +121,13 @@ for the default one), `op` for `llvm_rmw!` an `atomicrmw` operation such as `:ui
 `md` metadata to attach, `()` or e.g. `((:mmra, ((Symbol("metal-synchronize-as"), :threadgroup),)),)`
 for LLVM's memory model relaxation annotations. `llvm_rmw!` emits the operation as it is, so the
 target has to support it: e.g., LLVM's AArch64 back-end can't compile `uinc_wrap` before LLVM 22.
-Code that GPUCompiler compiles gets every instruction that the IR can express, and
-GPUCompiler implements those for the target. That uses GPUCompiler's
-`SHARED_METHOD_TABLE`: a back-end that builds its own `method_table_view` instead of
-declaring its tables with `method_tables` gets the code Julia's pipeline would, which is
-correct but has the CPU's restrictions.
+The primitives also emit scopes as they are given, in any code.
+
+Code that GPUCompiler compiles for a device gets every instruction that the IR can express,
+with the scope it was asked for, which GPUCompiler and the target's LLVM back-end implement.
+That uses GPUCompiler's `SHARED_METHOD_TABLE`: a back-end that builds its own
+`method_table_view` instead of declaring its tables with `method_tables` gets the code Julia's
+pipeline would, which is correct but has the CPU's restrictions.
 
 ## Upgrading from 0.3
 
