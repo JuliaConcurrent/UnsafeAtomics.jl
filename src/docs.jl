@@ -124,6 +124,6 @@ The type of the atomic orderings, which are LLVM's: `UnsafeAtomics.unordered`, `
 
 The type of the synchronization scopes, which are LLVM's `syncscope`s: the set of threads an
 atomic operation synchronizes with. `UnsafeAtomics.singlethread`, `subgroup`, `workgroup`,
-`device` and `system` (also called `none`) are the canonical ones, which the GPU back-ends map
+`device` and `system` are the canonical ones, which the GPU back-ends map
 to their targets' scopes. `UnsafeAtomics.SyncScope(name)` makes others.
 """ UnsafeAtomics.SyncScope

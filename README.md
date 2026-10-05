@@ -127,6 +127,8 @@ inline assembly for the CPU; GPU back-ends replace it by overlaying
   21 (Julia 1.14), and are a compare-and-swap loop before; on `LLVMPtr`, 0.3 used `atomicrmw
   fmax`/`fmin`. Use `UA.fmax`/`UA.fmin` (`fmax!`/`fmin!`) for those instructions' IEEE
   `maxNum`/`minNum`.
+- The default scope is called `UA.system`; `UA.none` is an alias. Scopes no longer print as
+  LLVM IR.
 - The `LLVMPtr` methods are part of the package; they no longer need LLVM.jl.
 - The functions are only defined for `Ptr` and `Core.LLVMPtr`, and invalid arguments throw a
   `ConcurrencyViolationError` or an `ArgumentError`.
