@@ -99,7 +99,7 @@ like `add!` only compute the new value when they need the loop.
 The functions above take keyword arguments and orderings as values, which relies on constant
 propagation. Code that passes these arguments through functions that aren't inlined, like the
 internals of a GPU back-end, can use the primitives that take everything as a `Val` instead.
-They are the same instructions:
+They are the same instructions, and part of the public API, like the functions above:
 
 ```julia
 UA.Internal.llvm_load(ptr, Val(order), Val(scope), Val(volatile), Val(align), Val(md))

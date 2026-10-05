@@ -86,4 +86,10 @@ Internal.declare_public(
     :failure_order,
 )
 
+# the primitives for back-ends, which are documented in the README
+Internal.declare_public(
+    Internal,
+    :llvm_load, :llvm_store!, :llvm_rmw!, :llvm_modify!, :llvm_cmpxchg!, :llvm_fence,
+)
+
 end  # baremodule UnsafeAtomics
