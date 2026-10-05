@@ -1,14 +1,3 @@
-#! format: off
-if 16 in ATOMIC_SIZES
-    const inttypes = (Int8, Int16, Int32, Int64, Int128,
-                      UInt8, UInt16, UInt32, UInt64, UInt128)
-else
-    const inttypes = (Int8, Int16, Int32, Int64,
-                      UInt8, UInt16, UInt32, UInt64)
-end
-const floattypes = (Float16, Float32, Float64)
-#! format: on
-
 const OP_RMW_TABLE = [
     (+) => :add,
     (-) => :sub,

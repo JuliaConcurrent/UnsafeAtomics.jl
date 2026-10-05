@@ -3,8 +3,9 @@ module TestInference
 using UnsafeAtomics: UnsafeAtomics, unordered, monotonic, acquire, release, acq_rel, seq_cst
 using UnsafeAtomics: singlethread, subgroup, workgroup, device, system
 using Core: LLVMPtr
-using InteractiveUtils: code_llvm
 using Test
+
+using ..Helpers
 
 # Constant orderings and scopes, as objects or as Symbols, give a single instruction.
 add_constant(p, x) = UnsafeAtomics.add!(p, x, acquire, device)
@@ -22,11 +23,6 @@ cas_seq_cst(p, c, n) = UnsafeAtomics.cas!(p, c, n, :sequentially_consistent)
 fence_symbols() = UnsafeAtomics.fence(:acquire_release, :workgroup)
 
 const P = LLVMPtr{Int32,1}
-
-# without the counters that code coverage adds (`atomicrmw add` on a constant address)
-llvm_ir(f, types) =
-    join(filter(!contains("inttoptr ("),
-                split(sprint(io -> code_llvm(io, f, types; debuginfo = :none)), '\n')), '\n')
 
 instructions(ir, instruction) = [strip(l) for l in split(ir, '\n') if occursin(instruction, l)]
 

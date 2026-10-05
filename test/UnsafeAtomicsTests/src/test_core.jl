@@ -2,12 +2,11 @@ module TestCore
 
 using UnsafeAtomics: UnsafeAtomics, unordered, monotonic, acquire, release, acq_rel, seq_cst, right
 using UnsafeAtomics: none, singlethread, subgroup, workgroup, device, system, SyncScope
-using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes, floattypes
-using InteractiveUtils: code_llvm, code_typed
+using UnsafeAtomics.Internal: OP_RMW_TABLE
 using Test
 using Base: ConcurrencyViolationError
 
-using ..Bits
+using ..Helpers
 
 function test_default_ordering()
     @testset for T in inttypes
@@ -144,11 +143,6 @@ function test_explicit_syncscope()
     UnsafeAtomics.fence(acq_rel, none)
     UnsafeAtomics.fence(seq_cst, none)
 end
-
-# without the counters that code coverage adds (`atomicrmw add` on a constant address)
-llvm_ir(f, types) =
-    join(filter(!contains("inttoptr ("),
-                split(sprint(io -> code_llvm(io, f, types; debuginfo = :none)), '\n')), '\n')
 
 scoped_load(ptr, scope) = UnsafeAtomics.load(ptr, acquire, scope)
 scoped_store!(ptr, x, scope) = UnsafeAtomics.store!(ptr, x, release, scope)
@@ -497,7 +491,7 @@ function test_fence_is_emitted()
     # Julia versions, while a wrapper call can be deleted when its result is unused.
     # `seq_cst` may lower to inline asm rather than an LLVM `fence` (see core.jl).
     @testset for f in (barrier_acquire, barrier_release, barrier_acq_rel, barrier_seq_cst)
-        ir = sprint(io -> code_llvm(io, f, Tuple{}; optimize = true, debuginfo = :none))
+        ir = llvm_ir(f, Tuple{})
         @test occursin(r"^\s*fence "m, ir) || occursin("asm sideeffect", ir)
     end
 end

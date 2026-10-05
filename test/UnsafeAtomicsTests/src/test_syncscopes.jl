@@ -1,8 +1,9 @@
 module TestSyncScopes
 
 using UnsafeAtomics: UnsafeAtomics, SyncScope
-using InteractiveUtils: code_llvm
 using Test
+
+using ..Helpers
 
 const SYNCSCOPES = [:singlethread, :subgroup, :workgroup, :device, :system]
 
@@ -38,7 +39,7 @@ const ODD_SCOPE = SyncScope(Symbol("a\"b\\c"))
 odd_load(p) = UnsafeAtomics.load(p, UnsafeAtomics.monotonic, ODD_SCOPE)
 
 function test_escaping()
-    ir = sprint(io -> code_llvm(io, odd_load, Tuple{Ptr{Int}}; debuginfo = :none))
+    ir = llvm_ir(odd_load, Tuple{Ptr{Int}})
     @test occursin("syncscope(\"a\\22b\\\\c\")", ir)
 end
 

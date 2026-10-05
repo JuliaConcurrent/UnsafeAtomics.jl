@@ -2,13 +2,12 @@ module TestGenerator
 
 using UnsafeAtomics: UnsafeAtomics
 using UnsafeAtomics.Internal:
-    llvm_load, llvm_store!, llvm_rmw!, llvm_cmpxchg!, llvm_fence, ATOMIC_SIZES, HAS_BFLOAT16
+    llvm_load, llvm_store!, llvm_rmw!, llvm_cmpxchg!, llvm_fence, HAS_BFLOAT16
 using Core: LLVMPtr
-using InteractiveUtils: code_llvm
 using Test
 using Base: ConcurrencyViolationError
 
-using ..Bits
+using ..Helpers
 
 # Two distinct values of every supported type.
 values(::Type{T}) where {T<:Integer} = (T(1), T(2))
@@ -22,11 +21,7 @@ if HAS_BFLOAT16
     values(::Type{Core.BFloat16}) = Tuple(reinterpret(Core.BFloat16, BFLOAT16_BITS))
 end
 
-const TYPES = Any[
-    Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, Bool,
-    Float16, Float32, Float64, Ptr{Cvoid}, LLVMPtr{Cvoid,1}, Bits32,
-]
-16 in ATOMIC_SIZES && append!(TYPES, [Int128, UInt128])
+const TYPES = Any[inttypes..., Bool, floattypes..., Ptr{Cvoid}, LLVMPtr{Cvoid,1}, Bits32]
 HAS_BFLOAT16 && push!(TYPES, Core.BFloat16)
 
 # The pointer kinds to run on (the CPU can only access address space 0).
@@ -115,12 +110,6 @@ function test_runtime_fence()
     end
     @test llvm_fence(Val(:monotonic), Val(:system), NOMD) === nothing
 end
-
-# The generated code, without the counters that code coverage adds (`atomicrmw add` on a
-# constant address).
-llvm_ir(f, types; kwargs...) =
-    join(filter(!contains("inttoptr ("),
-                split(sprint(io -> code_llvm(io, f, types; debuginfo = :none, kwargs...)), '\n')), '\n')
 
 # The line of the generated code that has the atomic instruction.
 function instruction(f, types; raw = false)
@@ -292,7 +281,7 @@ function test_ir_metadata()
                         ((:mmra, (tag, tag2)),) => [r"^!\d+ = !{!\d+, !\d+}$",
                                                     r"^!\d+ = !{!\"metal-synchronize-as\", !\"device\"}$"])
         for (f, types) in ((gen_md_rmw!, Tuple{P,Int32,Val{md}}), (gen_md_fence, Tuple{Val{md}}))
-            ir = sprint(io -> code_llvm(io, f, types; debuginfo = :none, raw = true, dump_module = true))
+            ir = llvm_ir(f, types; raw = true, dump_module = true)
             @test occursin(r", !mmra !\d+", instruction(f, types; raw = true))
             for node in nodes
                 @test any(line -> occursin(node, line), split(ir, '\n'))

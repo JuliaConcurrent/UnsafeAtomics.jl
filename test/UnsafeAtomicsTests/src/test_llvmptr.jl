@@ -3,9 +3,11 @@ module TestLLVMPtr
 import InteractiveUtils
 
 using UnsafeAtomics: UnsafeAtomics, acquire, release, acq_rel, seq_cst
-using UnsafeAtomics.Internal: OP_RMW_TABLE, inttypes
+using UnsafeAtomics.Internal: OP_RMW_TABLE
 using Test
 using Base: ConcurrencyViolationError
+
+using ..Helpers
 
 # the operations that apply to integers
 const INT_RMW_TABLE = [(op, name) for (op, name) in OP_RMW_TABLE
