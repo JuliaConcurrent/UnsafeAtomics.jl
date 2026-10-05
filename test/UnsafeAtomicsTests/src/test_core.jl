@@ -460,13 +460,13 @@ function test_bfloat16()
         xs[1] = one
         ptr = pointer_to(P, xs)
         @test bits(UnsafeAtomics.xchg!(ptr, two)) === 0x3f80
-        if Base.libllvm_version >= v"20"
-            # Core.BFloat16 has no arithmetic without BFloat16s.jl, but `add!` doesn't need it
-            @test bits(UnsafeAtomics.add!(ptr, one)) === 0x4000
-            @test bits(xs[1]) === 0x4040  # 3.0
-        else
-            @test UnsafeAtomics.Internal.native_rmw(+, Core.BFloat16) === nothing
-        end
+        # Core.BFloat16 has no arithmetic without BFloat16s.jl, but neither the instruction
+        # nor the compare-and-swap loop needs it
+        @test bits(UnsafeAtomics.add!(ptr, one)) === 0x4000
+        @test bits(xs[1]) === 0x4040  # 3.0
+        @test bits(UnsafeAtomics.max!(ptr, two)) === 0x4040
+        @test bits(UnsafeAtomics.modify!(ptr, -, one).second) === 0x4000  # 2.0
+        @test bits(UnsafeAtomics.modify!(ptr, +, one, UnsafeAtomics.acq_rel).second) === 0x4040
     end
 end
 

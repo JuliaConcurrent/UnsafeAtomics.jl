@@ -314,10 +314,28 @@ function native_rmw(@nospecialize(op), @nospecialize(T))
     return nothing
 end
 
+# `op(old, x)` for the value `modify!` returns and the compare-and-swap loop. Base doesn't
+# implement arithmetic on `Core.BFloat16`, so compute the operations UnsafeAtomics knows in
+# Float32, which rounds to the same result.
+@inline apply_op(op, old, x) = op(old, x)
+if HAS_BFLOAT16
+    bf16_to_f32(x::Core.BFloat16) = reinterpret(Float32, UInt32(reinterpret(UInt16, x)) << 16)
+    function f32_to_bf16(x::Float32)
+        isnan(x) && return reinterpret(Core.BFloat16, 0x7fc0 | UInt16(reinterpret(UInt32, x) >> 16))
+        u = reinterpret(UInt32, x)
+        u += 0x7fff + ((u >> 16) & 0x1)   # round to nearest, ties to even
+        return reinterpret(Core.BFloat16, UInt16(u >> 16))
+    end
+    for op in (+, -, max, min, UnsafeAtomics.fmax, UnsafeAtomics.fmin)
+        @eval @inline apply_op(::typeof($op), old::Core.BFloat16, x::Core.BFloat16) =
+            f32_to_bf16($op(bf16_to_f32(old), bf16_to_f32(x)))
+    end
+end
+
 @inline function cas_loop!(ptr::AnyPtr{T}, op, x, order, scope, volatile, align, md) where {T}
     old = llvm_load(ptr, Val(:monotonic), scope, volatile, align, md)
     while true
-        new = op(old, x)::T
+        new = apply_op(op, old, x)::T
         (; old, success) = llvm_cmpxchg!(
             ptr, old, new, order, Val(:monotonic), scope, Val(true), volatile, align, md)
         success && return old => new
@@ -332,7 +350,7 @@ function modify_ir(T, op, order, fetch)
         return fetch ? :(first($loop)) : loop
     end
     rmw = :(llvm_rmw!(ptr, Val($(QuoteNode(rmw))), x, order, scope, volatile, align, md))
-    return fetch ? rmw : :(old = $rmw; old => op(old, x))
+    return fetch ? rmw : :(old = $rmw; old => apply_op(op, old, x))
 end
 
 # `old => op(old, x)`, where `op(old, x)` is computed in Julia for an `atomicrmw`

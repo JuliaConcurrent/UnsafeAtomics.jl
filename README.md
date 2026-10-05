@@ -91,8 +91,9 @@ propagates, `-0.0 < 0.0`); `UA.fmax` and `UA.fmin` are IEEE `maxNum`/`minNum`, w
 NaN operand. With an instruction, `op(old, x)` in the result of `modify!` is computed in Julia,
 which for floating-point numbers can differ from the stored value in NaN payloads or, for
 `fmax`/`fmin`, in the sign of zero; `cas!` returns exactly what was stored. `op` has to be
-defined for `T` (e.g. `+` for `Core.BFloat16` needs BFloat16s.jl), whereas the named functions
-like `add!` only compute the new value when they need the loop.
+defined for `T`, except for the operations on `Core.BFloat16` in the table above, which
+UnsafeAtomics computes itself; the named functions like `add!` only compute the new value when
+they need the loop.
 
 ## For back-ends
 
