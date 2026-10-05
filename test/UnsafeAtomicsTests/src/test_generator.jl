@@ -149,6 +149,7 @@ gen_rmw!(p, x, ::Val{op}, ::Val{o}, ::Val{s}, ::Val{v}, ::Val{al}) where {op,o,s
     llvm_rmw!(p, Val(op), x, Val(o), Val(s), Val(v), Val(al), NOMD)
 gen_cmpxchg!(p, c, n, ::Val{so}, ::Val{fo}, ::Val{s}, ::Val{w}, ::Val{v}, ::Val{al}) where {so,fo,s,w,v,al} =
     llvm_cmpxchg!(p, c, n, Val(so), Val(fo), Val(s), Val(w), Val(v), Val(al), NOMD)
+gen_fence(::Val{o}, ::Val{s}) where {o,s} = llvm_fence(Val(o), Val(s), NOMD)
 
 scope_ir(s) = s === :system ? "" : " syncscope(\"$s\")"
 volatile_ir(v) = v ? " volatile" : ""
@@ -190,6 +191,10 @@ function test_ir()
         @test !occursin("alloca", ir)
         P <: LLVMPtr && @test !occursin("inttoptr", ir)
     end
+    # over-aligned
+    P = LLVMPtr{Int32,1}
+    @test endswith(instruction(gen_load, Tuple{P,Val{:acquire},Val{:device},Val{false},Val{16}}), "align 16")
+    @test endswith(instruction(gen_rmw!, Tuple{P,Int32,Val{:add},Val{:monotonic},Val{:device},Val{false},Val{8}}), "align 8")
 end
 
 function test_ir_orderings()
@@ -206,6 +211,9 @@ function test_ir_orderings()
             cas = instruction(gen_cmpxchg!, Tuple{P,Int32,Int32,Val{o},Val{fo},Val{:device},Val{false},Val{false},Val{4}})
             @test endswith(cas, " $o $fo, align 4")
         end
+    end
+    for o in (:acquire, :release, :acq_rel, :seq_cst)
+        @test instruction(gen_fence, Tuple{Val{o},Val{:system}}) == "fence $o"
     end
     # Julia's names
     @test endswith(instruction(gen_rmw!, Tuple{P,Int32,Val{:add},Val{:acquire_release},Val{:device},Val{false},Val{4}}), " acq_rel, align 4")
@@ -255,20 +263,6 @@ function test_intrinsics()
     end
 end
 
-gen_fence(::Val{o}, ::Val{s}) where {o,s} = llvm_fence(Val(o), Val(s), NOMD)
-
-function test_ir_scopes_and_alignment()
-    P = LLVMPtr{Int32,1}
-    for s in (:singlethread, :subgroup, :workgroup, :device, :agent, :system)
-        @test endswith(instruction(gen_load, Tuple{P,Val{:acquire},Val{s},Val{false},Val{4}}),
-                       scope_ir(s) * " acquire, align 4")
-        s === :singlethread && continue  # a GC safepoint looks the same
-        @test instruction(gen_fence, Tuple{Val{:seq_cst},Val{s}}) == "fence" * scope_ir(s) * " seq_cst"
-    end
-    @test endswith(instruction(gen_load, Tuple{P,Val{:acquire},Val{:device},Val{false},Val{16}}), "align 16")
-    @test endswith(instruction(gen_rmw!, Tuple{P,Int32,Val{:add},Val{:monotonic},Val{:device},Val{false},Val{8}}), "align 8")
-end
-
 gen_md_rmw!(p, x, ::Val{md}) where {md} =
     llvm_rmw!(p, Val(:add), x, Val(:monotonic), Val(:workgroup), Val(false), Val(4), Val(md))
 gen_md_fence(::Val{md}) where {md} = llvm_fence(Val(:release), Val(:workgroup), Val(md))
@@ -310,7 +304,7 @@ function test_invalid()
         end
         @test_throws ConcurrencyViolationError llvm_fence(V(:unordered), V(:system), NOMD)
 
-        for al in (0, 2, 3, 6, 4.0)
+        for al in (0, 2, 3, 6, 4.0, true)
             @test_throws ArgumentError llvm_load(p, V(:monotonic), V(:system), V(false), V(al), NOMD)
         end
         @test_throws ArgumentError llvm_load(p, V(:monotonic), V(1), V(false), V(4), NOMD)

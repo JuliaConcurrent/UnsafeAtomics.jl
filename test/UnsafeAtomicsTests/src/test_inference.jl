@@ -54,30 +54,6 @@ function test_constant_orderings()
     check(fence_symbols, Tuple{}, r"^\s*fence ", "fence syncscope(\"workgroup\") acq_rel", Nothing)
 end
 
-function test_invalid_constants()
-    xs = Int32[0]
-    GC.@preserve xs begin
-        ptr = pointer(xs)
-        @test_throws Base.ConcurrencyViolationError UnsafeAtomics.add!(ptr, Int32(1), :unordered)
-        @test_throws Base.ConcurrencyViolationError UnsafeAtomics.add!(ptr, Int32(1), :relaxed)
-        @test_throws Base.ConcurrencyViolationError UnsafeAtomics.load(ptr, 1)
-        @test_throws ArgumentError UnsafeAtomics.add!(ptr, Int32(1), monotonic, :agent)
-        @test_throws ArgumentError UnsafeAtomics.load(ptr, monotonic, 1)
-        @test xs[1] == 0
-    end
-    # invalid orderings for the system-scope fence never reach Julia's intrinsic
-    @test_throws Base.ConcurrencyViolationError UnsafeAtomics.fence(:bogus)
-    @test_throws Base.ConcurrencyViolationError UnsafeAtomics.fence(:unordered)
-    @test UnsafeAtomics.fence(:acquire_release) === nothing
-    # The error for an invalid scope has a literal message: GPU compilers don't fold `*` on
-    # strings, and can't allocate one.
-    src = only(code_lowered(UnsafeAtomics.Internal.throw_invalid_scope, Tuple{}))
-    @test !any(src.code) do ex
-        f = Meta.isexpr(ex, :call) ? ex.args[1] : ex   # Julia 1.12 refers to `*` separately
-        f isa GlobalRef && f.name === :*
-    end
-end
-
 kw_load(p) = UnsafeAtomics.load(p, acquire, device; volatile = true, align = 16)
 kw_store(p, x) = UnsafeAtomics.store!(p, x, release, device; volatile = true)
 kw_cas(p, c, n) = UnsafeAtomics.cas!(p, c, n, acq_rel, acquire, device; weak = true, align = 8)
@@ -113,9 +89,7 @@ function test_keywords()
         @test UnsafeAtomics.load(ptr; volatile = true, align = 16) == 1
         @test UnsafeAtomics.cas!(ptr, 1, 3; weak = false) === (old = 1, success = true)
         @test_throws ArgumentError UnsafeAtomics.load(ptr; align = 4)
-        @test_throws ArgumentError UnsafeAtomics.load(ptr; align = 12)
-        @test_throws ArgumentError UnsafeAtomics.store!(ptr, 1; align = 0)
-        @test_throws ArgumentError UnsafeAtomics.load(ptr; align = true)
+        @test_throws ArgumentError UnsafeAtomics.store!(ptr, 1; align = 12)
     end
 end
 

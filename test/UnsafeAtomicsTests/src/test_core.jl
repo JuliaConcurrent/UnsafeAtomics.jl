@@ -40,6 +40,10 @@ function check_operations(T, P, load = (), store = (), cas = (), modify = (), rm
         @test xs[1] === x1
         @test UnsafeAtomics.cas!(ptr, x1, x2, cas...) === (old = x1, success = true)
         @test xs[1] === x2
+        if !(T <: AbstractBits)  # a compare-and-swap loop
+            xs[1] = x1
+            @test UnsafeAtomics.modify!(ptr, *, x2, modify...) === (x1 => x1 * x2)
+        end
         @testset for (op, name) in rmw_table_for(T)
             xs[1] = x1
             @test UnsafeAtomics.modify!(ptr, op, x2, modify...) === (x1 => op(x1, x2))
@@ -68,31 +72,22 @@ function test_explicit_ordering()
     @testset for T in [UInt, Float64], P in POINTER_KINDS
         check_operations(T, P, (acquire,), (release,), (acq_rel, acquire), (acq_rel,), (acquire,))
     end
-    UnsafeAtomics.fence(monotonic)
-    UnsafeAtomics.fence(acquire)
-    UnsafeAtomics.fence(release)
-    UnsafeAtomics.fence(acq_rel)
-    UnsafeAtomics.fence(seq_cst)
 end
 
+const SCOPES = [singlethread, subgroup, workgroup, device, system, SyncScope(:agent)]
+
 function test_explicit_syncscope()
-    @testset for T in [UInt, Float64], P in POINTER_KINDS, scope in [none, singlethread]
+    @testset for T in [UInt, Float64], P in POINTER_KINDS, scope in SCOPES
         check_operations(T, P, (acquire, scope), (release, scope), (acq_rel, acquire, scope),
                          (acq_rel, scope), (acquire, scope))
     end
-    UnsafeAtomics.fence(monotonic, none)
-    UnsafeAtomics.fence(acquire, singlethread)
-    UnsafeAtomics.fence(release, singlethread)
-    UnsafeAtomics.fence(acq_rel, none)
-    UnsafeAtomics.fence(seq_cst, none)
 end
 
 scoped_load(ptr, scope) = UnsafeAtomics.load(ptr, acquire, scope)
 scoped_store!(ptr, x, scope) = UnsafeAtomics.store!(ptr, x, release, scope)
 scoped_cas!(ptr, cmp, new, scope) = UnsafeAtomics.cas!(ptr, cmp, new, acq_rel, acquire, scope)
 scoped_add!(ptr, x, scope) = UnsafeAtomics.add!(ptr, x, acq_rel, scope)
-
-const SCOPES = [singlethread, subgroup, workgroup, device, system, SyncScope(:agent)]
+scoped_fence(ord, scope) = (UnsafeAtomics.fence(ord, scope); nothing)
 
 # The line of `ir` with the atomic instruction, which must mention the right scope.
 function scoped_instruction(ir, instruction, scope)
@@ -113,67 +108,51 @@ function test_syncscope_is_emitted()
         @test scoped_instruction(llvm_ir(scoped_cas!, Tuple{P,T,T,S}), r"cmpxchg .* acq_rel acquire", scope)
         @test scoped_instruction(llvm_ir(scoped_add!, Tuple{P,T,S}), r"atomicrmw f?add .* acq_rel", scope)
     end
-end
-
-function test_explicit_scopes()
-    @testset for P in POINTER_KINDS, scope in SCOPES
-        xs = Int32[1, 2]
-        ptr = pointer_to(P, xs)
-        GC.@preserve xs begin
-            @test UnsafeAtomics.load(ptr, acquire, scope) === Int32(1)
-            UnsafeAtomics.store!(ptr, Int32(2), release, scope)
-            @test UnsafeAtomics.cas!(ptr, Int32(2), Int32(3), acq_rel, acquire, scope) ===
-                  (old = Int32(2), success = true)
-            @test UnsafeAtomics.add!(ptr, Int32(1), acq_rel, scope) === Int32(3)
-            @test UnsafeAtomics.max!(ptr, Int32(7), monotonic, scope) === Int32(4)
-            @test UnsafeAtomics.modify!(ptr, *, Int32(2), seq_cst, scope) === (Int32(7) => Int32(14))
-            @test xs == Int32[14, 2]
-        end
+    # system-scope fences are tested by test_fence_is_emitted
+    @testset for scope in filter(!=(system), SCOPES), ord in [acquire, release, acq_rel, seq_cst]
+        ir = llvm_ir(scoped_fence, Tuple{typeof(ord),typeof(scope)})
+        name = UnsafeAtomics.Internal.llvm_syncscope(scope)
+        @test occursin("fence syncscope(\"$name\") $ord", ir)
     end
 end
 
-function test_unsupported_arguments()
-    # These used to recurse in the `as_native_uint` fallbacks until the stack overflowed.
-    unsupported_scope = :agent  # only canonical scopes can be passed as a Symbol
+function test_invalid_arguments()
+    # These used to recurse in the `as_native_uint` fallbacks until the stack overflowed, and
+    # an unordered atomicrmw used to fail to parse.
     @testset for T in [Int32, Float32], P in POINTER_KINDS
         xs = T[1, 2]
         ptr = pointer_to(P, xs)
         GC.@preserve xs begin
             @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, release)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, acq_rel)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.store!(ptr, T(3), acquire)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.store!(ptr, T(3), acq_rel)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(
-                ptr, T(1), T(3), unordered, monotonic)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(
-                ptr, T(1), T(3), seq_cst, release)
-            @test_throws ArgumentError UnsafeAtomics.load(ptr, monotonic, unsupported_scope)
-            @test_throws ArgumentError UnsafeAtomics.store!(
-                ptr, T(3), monotonic, unsupported_scope)
-            @test_throws ArgumentError UnsafeAtomics.cas!(
-                ptr, T(1), T(3), monotonic, monotonic, unsupported_scope)
-            @test_throws ArgumentError UnsafeAtomics.fence(acquire, unsupported_scope)
             @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, :acquire_release)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.store!(ptr, T(3), acquire)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(ptr, T(1), T(3), unordered, monotonic)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.cas!(ptr, T(1), T(3), seq_cst, release)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.add!(ptr, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.max!(ptr, T(1), unordered)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.modify!(ptr, *, T(1), unordered)
             @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, :bogus)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.add!(ptr, T(1), :relaxed)
+            @test_throws ConcurrencyViolationError UnsafeAtomics.load(ptr, 1)
+            # only canonical scopes can be passed as a Symbol
+            @test_throws ArgumentError UnsafeAtomics.load(ptr, monotonic, :agent)
+            @test_throws ArgumentError UnsafeAtomics.store!(ptr, T(3), monotonic, :agent)
+            @test_throws ArgumentError UnsafeAtomics.cas!(ptr, T(1), T(3), monotonic, monotonic, :agent)
+            @test_throws ArgumentError UnsafeAtomics.add!(ptr, T(1), monotonic, :agent)
+            @test_throws ArgumentError UnsafeAtomics.load(ptr, monotonic, 1)
             @test xs == T[1, 2]
         end
     end
-end
-
-function test_unordered_rmw()
-    # atomicrmw can't be unordered; this used to fail to parse the generated IR.
-    @testset for T in [Int32, Float64], P in POINTER_KINDS
-        xs = T[1, 2]
-        ptr = pointer_to(P, xs)
-        GC.@preserve xs begin
-            @test_throws ConcurrencyViolationError UnsafeAtomics.add!(ptr, T(1), unordered)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.xchg!(ptr, T(1), unordered)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.max!(ptr, T(1), unordered)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.modify!(ptr, *, T(1), unordered)
-            @test_throws ConcurrencyViolationError UnsafeAtomics.add!(
-                ptr, T(1), unordered, singlethread)
-            @test xs == T[1, 2]
-        end
+    @test_throws ArgumentError UnsafeAtomics.fence(acquire, :agent)
+    # invalid orderings for the system-scope fence never reach Julia's intrinsic
+    @test_throws ConcurrencyViolationError UnsafeAtomics.fence(:bogus)
+    @test UnsafeAtomics.fence(:acquire_release) === nothing
+    # The error for an invalid scope has a literal message: GPU compilers don't fold `*` on
+    # strings, and can't allocate one.
+    src = only(code_lowered(UnsafeAtomics.Internal.throw_invalid_scope, Tuple{}))
+    @test !any(src.code) do ex
+        f = Meta.isexpr(ex, :call) ? ex.args[1] : ex   # Julia 1.12 refers to `*` separately
+        f isa GlobalRef && f.name === :*
     end
 end
 
@@ -456,28 +435,17 @@ function test_fence_unordered_error()
     @test catch_fence(monotonic) === nothing
 end
 
-scoped_fence(ord, scope) = (UnsafeAtomics.fence(ord, scope); nothing)
-
 function test_scoped_fences()
-    @testset for scope in filter(!=(system), SCOPES), ord in [acquire, release, acq_rel, seq_cst]
-        @test UnsafeAtomics.fence(ord, scope) === nothing
-        ir = llvm_ir(scoped_fence, Tuple{typeof(ord),typeof(scope)})
-        name = UnsafeAtomics.Internal.llvm_syncscope(scope)
-        @test occursin("fence syncscope(\"$name\") $ord", ir)
-    end
+    # `fence` requires at least `acquire`. The intrinsic accepts `monotonic` and turns it into
+    # a no-op, but rejects `unordered`; the other scopes behave the same.
     @testset for scope in SCOPES
-        @test UnsafeAtomics.fence(monotonic, scope) === nothing
+        for ord in [monotonic, acquire, release, acq_rel, seq_cst]
+            @test UnsafeAtomics.fence(ord, scope) === nothing
+        end
         @test_throws ConcurrencyViolationError UnsafeAtomics.fence(unordered, scope)
     end
     # the name is escaped in the IR
     @test UnsafeAtomics.fence(acquire, SyncScope(Symbol("a\"b\\c"))) === nothing
-end
-
-function test_fence_weak_orderings()
-    # `fence` requires at least `acquire`. The intrinsic accepts `monotonic` and turns
-    # it into a no-op, but rejects `unordered`; preserve both behaviors in the fallback.
-    @test UnsafeAtomics.fence(monotonic, none) === nothing
-    @test_throws Base.ConcurrencyViolationError UnsafeAtomics.fence(unordered, none)
 end
 
 # from memory: before LLVM 17, the AArch64 back-end can't materialize a bfloat constant
