@@ -90,29 +90,6 @@ const FENCE_INTRINSIC_ELIDABLE =
         true
     end
 
-# Before LLVM 20, a seq_cst fence on x86_64 lowers to `mfence`, which is slow on AMD CPUs.
-# Emit a locked `or` instead, like LLVM does since llvm/llvm-project#106555.
-const X86_FENCE_WORKAROUND = Sys.ARCH == :x86_64 && Base.libllvm_version < v"20"
-
-# The system-scope seq_cst fence on the host CPU. GPU back-ends overlay this function with a
-# plain `fence seq_cst`, as the x86 assembly below must not end up in device code.
-if X86_FENCE_WORKAROUND
-    @inline cpu_seq_cst_fence() = Base.llvmcall(
-        (raw"""
-        define void @fence() #0 {
-        entry:
-            tail call void asm sideeffect "lock orq $$0 , (%rsp)", ""(); should this have ~{memory}
-            ret void
-        }
-        attributes #0 = { alwaysinline }
-        """, "fence"), Nothing, Tuple{})
-else
-    @inline cpu_seq_cst_fence() = llvmcall("""
-        fence seq_cst
-        ret void
-        """, Cvoid, Tuple{})
-end
-
 if !FENCE_INTRINSIC_ELIDABLE
     # Core.Intrinsics.atomic_fence was introduced in 1.10
     if VERSION < v"1.14.0-DEV.1371"
@@ -135,8 +112,6 @@ else
             @eval system_fence(::$(typeof(ord))) = nothing
         elseif ord === unordered
             # defined below
-        elseif ord === seq_cst && X86_FENCE_WORKAROUND
-            # defined by the x86_64 special case below
         else
             @eval function system_fence(::$(typeof(ord)))
                 return llvmcall(
@@ -157,9 +132,6 @@ end
 system_fence(::typeof(unordered)) = throw_invalid_ordering()
 # Nor can it have another name; never pass that to the intrinsic either.
 system_fence(::LLVMOrdering) = throw_invalid_ordering()
-if X86_FENCE_WORKAROUND
-    system_fence(::typeof(seq_cst)) = cpu_seq_cst_fence()
-end
 
 @inline UnsafeAtomics.fence(order = seq_cst, scope = system) =
     fence_in(ordering_val(order), scope_val(scope))

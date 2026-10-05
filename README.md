@@ -117,10 +117,6 @@ for the default one), `op` for `llvm_rmw!` an `atomicrmw` operation such as `:ui
 for LLVM's memory model relaxation annotations. `llvm_rmw!` emits the operation as it is, so the
 target has to support it: e.g., LLVM's AArch64 back-end can't compile `uinc_wrap` before LLVM 22.
 
-On an x86_64 host, before LLVM 20 (Julia 1.12 and older), a system-scope `seq_cst` fence uses
-inline assembly for the CPU; GPU back-ends replace it by overlaying
-`UA.Internal.cpu_seq_cst_fence()` with a plain `fence seq_cst`.
-
 ## Upgrading from 0.3
 
 - `max` and `min` on floats have Julia's semantics, which only have an instruction from LLVM
@@ -129,6 +125,8 @@ inline assembly for the CPU; GPU back-ends replace it by overlaying
   `maxNum`/`minNum`.
 - The default scope is called `UA.system`; `UA.none` is an alias. Scopes no longer print as
   LLVM IR.
+- `fence(seq_cst)` is a plain `fence` instruction, like `Threads.atomic_fence()`. Before LLVM
+  20 (Julia 1.12), it's `mfence` on x86_64, instead of a locked `or`.
 - The `LLVMPtr` methods are part of the package; they no longer need LLVM.jl.
 - The functions are only defined for `Ptr` and `Core.LLVMPtr`, and invalid arguments throw a
   `ConcurrencyViolationError` or an `ArgumentError`.

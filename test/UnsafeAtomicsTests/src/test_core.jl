@@ -518,24 +518,6 @@ function test_fence_unordered_error()
     @test catch_fence(monotonic) === nothing
 end
 
-function test_cpu_seq_cst_fence()
-    # GPU back-ends overlay this hook, so it must exist on every host.
-    hook = UnsafeAtomics.Internal.cpu_seq_cst_fence
-    @test hook() === nothing
-    @test occursin(r"^\s*fence seq_cst"m, llvm_ir(hook, Tuple{})) ||
-          occursin("asm sideeffect", llvm_ir(hook, Tuple{}))
-
-    # The x86_64 inline assembly must only be reachable through the hook, and only
-    # before LLVM 20, which emits the same instruction for a plain fence.
-    src, _ = only(code_typed(UnsafeAtomics.Internal.system_fence, Tuple{typeof(seq_cst)};
-                             optimize = false))
-    @test occursin("cpu_seq_cst_fence", string(src)) ==
-          (Sys.ARCH === :x86_64 && Base.libllvm_version < v"20")
-    if Base.libllvm_version >= v"20"
-        @test !occursin("asm sideeffect", llvm_ir(barrier_seq_cst, Tuple{}))
-    end
-end
-
 scoped_fence(ord, scope) = (UnsafeAtomics.fence(ord, scope); nothing)
 
 function test_scoped_fences()
