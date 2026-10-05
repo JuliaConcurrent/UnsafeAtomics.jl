@@ -18,21 +18,38 @@ function or! end
 function xor! end
 function max! end
 function min! end
+function fmax! end
+function fmin! end
+function inc_wrap! end
+function dec_wrap! end
+function sub_cond! end
+function sub_sat! end
 
 # =>
 right(_, x) = x
 
+function fmax end
+function fmin end
+function inc_wrap end
+function dec_wrap end
+function sub_cond end
+function sub_sat end
+
 module Internal
 
-using Base.Sys: WORD_SIZE
-using Base: bitcast, llvmcall
+using Core: LLVMPtr
+
+using LLVM, LLVM.IR, LLVM.Build
+using LLVM.Interop: generate_llvmcall
 
 using ..UnsafeAtomics: UnsafeAtomics, Ordering, SyncScope, right
 
 include("utils.jl")
 include("orderings.jl")
 include("syncscopes.jl")
+include("generator.jl")
 include("core.jl")
+include("docs.jl")
 
 end  # module Internal
 
@@ -50,5 +67,30 @@ const sequentially_consistent = seq_cst
 # SyncScope
 const none = Internal.none
 const singlethread = Internal.singlethread
+const subgroup = Internal.subgroup
+const workgroup = Internal.workgroup
+const device = Internal.device
+const system = Internal.system
+
+const failure_order = Internal.failure_order
+
+Internal.declare_public(
+    UnsafeAtomics,
+    :Ordering, :SyncScope,
+    :load, :store!, :cas!, :modify!, :fence,
+    :add!, :sub!, :xchg!, :and!, :nand!, :or!, :xor!, :max!, :min!, :fmax!, :fmin!,
+    :inc_wrap!, :dec_wrap!, :sub_cond!, :sub_sat!,
+    :right, :fmax, :fmin, :inc_wrap, :dec_wrap, :sub_cond, :sub_sat,
+    :unordered, :monotonic, :acquire, :release, :acq_rel, :seq_cst,
+    :acquire_release, :sequentially_consistent,
+    :none, :singlethread, :subgroup, :workgroup, :device, :system,
+    :failure_order,
+)
+
+# the primitives for back-ends, which are documented in the README
+Internal.declare_public(
+    Internal,
+    :llvm_load, :llvm_store!, :llvm_rmw!, :llvm_modify!, :llvm_cmpxchg!, :llvm_fence,
+)
 
 end  # baremodule UnsafeAtomics
